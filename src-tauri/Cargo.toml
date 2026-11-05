@@ -1,12 +1,12 @@
 [package]
-name = "my-usage"
+name = "my-ai-usage"
 version = "0.2.0"
 description = "macOS Menu Bar AI Usage Tracker for Claude & AGY"
 authors = ["pao"]
 edition = "2021"
 
 [lib]
-name = "my_usage_lib"
+name = "my_ai_usage_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

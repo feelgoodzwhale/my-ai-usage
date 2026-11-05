@@ -48,7 +48,7 @@ impl Default for AppConfig {
 
 pub fn app_data_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(".local").join("share").join("my-usage")
+    base.join(".local").join("share").join("my-ai-usage")
 }
 
 pub fn config_file_path() -> PathBuf {

@@ -254,5 +254,5 @@ pub fn run() {
             quit_app
         ])
         .run(tauri::generate_context!())
-        .expect("error while running my-usage tauri application");
+        .expect("error while running my-ai-usage tauri application");
 }

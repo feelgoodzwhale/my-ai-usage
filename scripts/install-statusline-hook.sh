@@ -2,20 +2,20 @@
 set -euo pipefail
 
 TARGET_SCRIPT="$HOME/.claude/statusline-command.sh"
-DATA_DIR="$HOME/.local/share/my-usage"
+DATA_DIR="$HOME/.local/share/my-ai-usage"
 mkdir -p "$HOME/.claude" "$DATA_DIR"
 
-if [ -f "$TARGET_SCRIPT" ] && ! grep -q "my-usage statusline snapshot" "$TARGET_SCRIPT"; then
-  cp "$TARGET_SCRIPT" "${TARGET_SCRIPT}.my-usage.bak"
+if [ -f "$TARGET_SCRIPT" ] && ! grep -qE "my-(ai-)?usage statusline snapshot" "$TARGET_SCRIPT"; then
+  cp "$TARGET_SCRIPT" "${TARGET_SCRIPT}.my-ai-usage.bak"
 fi
 
 cat > "$TARGET_SCRIPT" << 'EOF'
 #!/bin/bash
 input=$(cat)
 
-# --- my-usage statusline snapshot (non-blocking atomic write) ---
+# --- my-ai-usage statusline snapshot (non-blocking atomic write) ---
 {
-  DATA_DIR="$HOME/.local/share/my-usage"
+  DATA_DIR="$HOME/.local/share/my-ai-usage"
   mkdir -p "$DATA_DIR" 2>/dev/null
   NOW_TS=$(date +%s)
   if echo "$input" | jq -e '.agent_state != null or .plan_tier != null or .cli_version != null' >/dev/null 2>&1; then
@@ -26,7 +26,7 @@ input=$(cat)
       && mv -f "$DATA_DIR/claude-status.json.tmp" "$DATA_DIR/claude-status.json" 2>/dev/null
   fi
 } >/dev/null 2>&1 &
-# --- end my-usage statusline snapshot ---
+# --- end my-ai-usage statusline snapshot ---
 
 model=$(echo "$input" | jq -r '.model.display_name // .model.id // "Claude"')
 effort=$(echo "$input" | jq -r '.effort.level // empty')

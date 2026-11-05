@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_SLUG="feelgoodzwhale/my-ai-usage"
 REPO_URL="https://github.com/${REPO_SLUG}.git"
-APP_NAME="my-usage"
+APP_NAME="my-ai-usage"
 APP_BUNDLE="${APP_NAME}.app"
 
 FORCE_SOURCE=false
@@ -73,11 +73,14 @@ do_uninstall() {
     fi
   done
 
-  if [[ -f "$HOME/.claude/statusline-command.sh.my-usage.bak" ]]; then
-    mv -f "$HOME/.claude/statusline-command.sh.my-usage.bak" "$HOME/.claude/statusline-command.sh"
-    chmod +x "$HOME/.claude/statusline-command.sh"
-    ok "คืนค่า ~/.claude/statusline-command.sh เดิมเรียบร้อยแล้ว"
-  fi
+  for bak in "$HOME/.claude/statusline-command.sh.my-ai-usage.bak" "$HOME/.claude/statusline-command.sh.my-usage.bak"; do
+    if [[ -f "$bak" ]]; then
+      mv -f "$bak" "$HOME/.claude/statusline-command.sh"
+      chmod +x "$HOME/.claude/statusline-command.sh"
+      ok "คืนค่า ~/.claude/statusline-command.sh เดิมเรียบร้อยแล้ว"
+      break
+    fi
+  done
 
   ok "ถอนการติดตั้ง ${APP_NAME} เสร็จสมบูรณ์"
   exit 0

@@ -2,7 +2,7 @@
 
 fn main() {
     if std::env::args().any(|a| a == "--dump-json") {
-        let mut engine = my_usage_lib::EngineInner::default();
+        let mut engine = my_ai_usage_lib::EngineInner::default();
         let payload = engine.compute_snapshot();
         println!(
             "{}",
@@ -11,5 +11,5 @@ fn main() {
         return;
     }
 
-    my_usage_lib::run()
+    my_ai_usage_lib::run()
 }

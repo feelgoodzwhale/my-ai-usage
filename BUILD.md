@@ -1,4 +1,4 @@
-# คู่มือการพัฒนาและ Build แอพ `my-usage` (macOS)
+# คู่มือการพัฒนาและ Build แอพ `my-ai-usage` (macOS)
 
 เอกสารนี้อธิบายขั้นตอนตั้งแต่การเตรียมเครื่อง การรันโหมดพัฒนา การสั่ง Build เป็นไฟล์ `.app` และ `.dmg` ไปจนถึงการแก้ไขปัญหาที่พบบ่อยบน macOS
 
@@ -32,10 +32,10 @@
 
 ## 2. การเตรียมโปรเจกต์ครั้งแรก (Initial Setup)
 
-เปิด Terminal เข้าไปที่โฟลเดอร์โปรเจกต์ `/Users/pao/Projects/my-usage`:
+เปิด Terminal เข้าไปที่โฟลเดอร์โปรเจกต์ `my-ai-usage`:
 
 ```bash
-cd /Users/pao/Projects/my-usage
+cd my-ai-usage
 
 # 1. ติดตั้งแพ็กเกจฝั่ง Frontend (React, Vite, Tailwind, Tauri API)
 npm install
@@ -104,9 +104,9 @@ npm run tauri build -- --target universal-apple-darwin
 
 | ประเภทไฟล์ | ตำแหน่งพาธ (Path) | การใช้งาน |
 | :--- | :--- | :--- |
-| **ตัวติดตั้ง `.dmg`** | `src-tauri/target/release/bundle/dmg/my-usage_0.1.0_aarch64.dmg` | ดับเบิลคลิกเพื่อลากแอพเข้าโฟลเดอร์ `Applications` หรือส่งต่อให้เครื่องอื่น |
-| **ตัวแอพ `.app`** | `src-tauri/target/release/bundle/macos/my-usage.app` | เปิดรันได้ทันที หรือคัดลอกไปวางใน `/Applications` |
-| **Binary ดิบ** | `src-tauri/target/release/my-usage` | รันผ่าน Terminal เช่น `./src-tauri/target/release/my-usage --dump-json` |
+| **ตัวติดตั้ง `.dmg`** | `src-tauri/target/release/bundle/dmg/my-ai-usage_0.2.0_aarch64.dmg` | ดับเบิลคลิกเพื่อลากแอพเข้าโฟลเดอร์ `Applications` หรือส่งต่อให้เครื่องอื่น |
+| **ตัวแอพ `.app`** | `src-tauri/target/release/bundle/macos/my-ai-usage.app` | เปิดรันได้ทันที หรือคัดลอกไปวางใน `/Applications` |
+| **Binary ดิบ** | `src-tauri/target/release/my-ai-usage` | รันผ่าน Terminal เช่น `./src-tauri/target/release/my-ai-usage --dump-json` |
 
 *(หาก Build แบบ Universal Binary พาธจะเปลี่ยนจาก `target/release/...` เป็น `target/universal-apple-darwin/release/...`)*
 
@@ -116,9 +116,9 @@ npm run tauri build -- --target universal-apple-darwin
 open src-tauri/target/release/bundle/dmg
 
 # ปิดแอพตัวเก่าที่รันอยู่ คัดลอกตัวใหม่ลง /Applications แล้วเปิดรันทันที
-pkill -f my-usage || true
-cp -R src-tauri/target/release/bundle/macos/my-usage.app /Applications/
-open /Applications/my-usage.app
+pkill -f my-ai-usage || true
+cp -R src-tauri/target/release/bundle/macos/my-ai-usage.app /Applications/
+open /Applications/my-ai-usage.app
 ```
 
 ---
@@ -132,12 +132,12 @@ npx tauri icon app-icon.svg
 ```
 
 ### การปรับเลขเวอร์ชันก่อน Build รอบใหม่
-เมื่อต้องการออกเวอร์ชันใหม่ (เช่นเปลี่ยนจาก `0.1.0` เป็น `0.2.0`) ให้อัปเดตเลขเวอร์ชันให้ตรงกันใน 3 ไฟล์:
-1. `package.json` (`"version": "0.2.0"`)
-2. `src-tauri/tauri.conf.json` (`"version": "0.2.0"`)
-3. `src-tauri/Cargo.toml` (`version = "0.2.0"`)
+เมื่อต้องการออกเวอร์ชันใหม่ (เช่นเปลี่ยนจาก `0.2.0` เป็น `0.3.0`) ให้อัปเดตเลขเวอร์ชันให้ตรงกันใน 3 ไฟล์:
+1. `package.json` (`"version": "0.3.0"`)
+2. `src-tauri/tauri.conf.json` (`"version": "0.3.0"`)
+3. `src-tauri/Cargo.toml` (`version = "0.3.0"`)
 
-ไฟล์ `.dmg` ที่ได้จะเปลี่ยนชื่อตามเวอร์ชันอัตโนมัติ เช่น `my-usage_0.2.0_aarch64.dmg`
+ไฟล์ `.dmg` ที่ได้จะเปลี่ยนชื่อตามเวอร์ชันอัตโนมัติ เช่น `my-ai-usage_0.3.0_aarch64.dmg`
 
 ---
 
@@ -151,12 +151,12 @@ npx tauri icon app-icon.svg
     *(ในโปรเจกต์นี้ได้ตั้งค่าแนบ `$HOME/.cargo/bin` ไว้ใน `package.json` ให้แล้ว หากใช้ผ่าน `npm run tauri ...` จะทำงานได้ทันที)*
 
 * **Build `.dmg` ล้มเหลวในขั้นตอน `bundle_dmg.sh` หรือ `hdiutil`**
-  * มักเกิดจากเปิด Mount ไฟล์ `.dmg` ตัวเก่าค้างไว้บน Desktop/Finder ให้กด **Eject** ไดรฟ์ `my-usage` ใน Finder ออกก่อน แล้วสั่ง `npm run tauri build` ใหม่
+  * มักเกิดจากเปิด Mount ไฟล์ `.dmg` ตัวเก่าค้างไว้บน Desktop/Finder ให้กด **Eject** ไดรฟ์ `my-ai-usage` ใน Finder ออกก่อน แล้วสั่ง `npm run tauri build` ใหม่
 
-* **นำไฟล์ `.dmg` ไปติดตั้งในเครื่อง Mac เครื่องอื่นแล้วขึ้นเตือน *"my-usage is damaged and can't be opened"* หรือ *"unidentified developer"***
+* **นำไฟล์ `.dmg` ไปติดตั้งในเครื่อง Mac เครื่องอื่นแล้วขึ้นเตือน *"my-ai-usage is damaged and can't be opened"* หรือ *"unidentified developer"***
   * เนื่องจากเป็นการ Build แบบ Local โดยยังไม่ได้ผูก Apple Developer Certificate ($99/ปี) เมื่อลากลง `/Applications` ในเครื่องอื่นแล้ว ให้รันคำสั่งปลด Quarantine ของ macOS ครั้งเดียว:
     ```bash
-    xattr -cr /Applications/my-usage.app
+    xattr -cr /Applications/my-ai-usage.app
     ```
 
 * **ต้องการล้างไฟล์แคช Build ทั้งหมดเพื่อ Build ใหม่ตั้งแต่ต้น (Clean Build)**
