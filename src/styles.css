@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+:root {
+  --surface-light: rgba(248, 250, 252, 0.78);
+  --surface-dark: rgba(15, 23, 42, 0.76);
+  --card-light: rgba(255, 255, 255, 0.68);
+  --card-dark: rgba(30, 41, 59, 0.56);
+  --border-light: rgba(15, 23, 42, 0.14);
+  --border-dark: rgba(255, 255, 255, 0.14);
+  --text-main-light: #0f172a;
+  --text-main-dark: #f8fafc;
+  --text-muted-light: #475569;
+  --text-muted-dark: #94a3b8;
+  --track-light: rgba(15, 23, 42, 0.12);
+  --track-dark: rgba(255, 255, 255, 0.14);
+  --thumb-light: rgba(71, 85, 105, 0.45);
+  --thumb-dark: rgba(148, 163, 184, 0.42);
+
+  /* Fallbacks for browsers without light-dark() */
+  --surface-bg: var(--surface-light);
+  --card-bg: var(--card-light);
+  --card-border: var(--border-light);
+  --text-main: var(--text-main-light);
+  --text-muted: var(--text-muted-light);
+  --meter-track: var(--track-light);
+  --scrollbar-thumb: var(--thumb-light);
+
+  @media (prefers-color-scheme: dark) {
+    --surface-bg: var(--surface-dark);
+    --card-bg: var(--card-dark);
+    --card-border: var(--border-dark);
+    --text-main: var(--text-main-dark);
+    --text-muted: var(--text-muted-dark);
+    --meter-track: var(--track-dark);
+    --scrollbar-thumb: var(--thumb-dark);
+  }
+
+  @supports (color: light-dark(white, black)) {
+    --surface-bg: light-dark(var(--surface-light), var(--surface-dark));
+    --card-bg: light-dark(var(--card-light), var(--card-dark));
+    --card-border: light-dark(var(--border-light), var(--border-dark));
+    --text-main: light-dark(var(--text-main-light), var(--text-main-dark));
+    --text-muted: light-dark(var(--text-muted-light), var(--text-muted-dark));
+    --meter-track: light-dark(var(--track-light), var(--track-dark));
+    --scrollbar-thumb: light-dark(var(--thumb-light), var(--thumb-dark));
+  }
+
+  /* MANDATORY viewport-wide native dark/light adaptation */
+  color-scheme: light dark;
+}
+
+@media (forced-colors: active) {
+  :root {
+    --card-border: CanvasText;
+    --text-main: CanvasText;
+    --text-muted: GrayText;
+  }
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.popover-shell {
+  background: var(--surface-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+}
+
+.glass-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 11px;
+}
+
+/* Scrollable region following macOS WebKit overlay rules (no transition on scrollbar-color) */
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+@supports not (scrollbar-color: auto) {
+  .scroll-area::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scroll-area::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+  }
+
+  .scroll-area::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* Native accessible <progress> styling */
+progress.usage-meter {
+  appearance: none;
+  border: 0 solid;
+  overflow: clip;
+  display: block;
+  inline-size: 100%;
+  block-size: var(--progress-height, 8px);
+  --progress-bar-radius: 1e5px;
+  border-radius: var(--progress-bar-radius);
+  background: var(--progress-bar-track, var(--meter-track));
+  box-shadow: inset 0 0 0 1px var(--card-border);
+}
+
+progress.usage-meter::-webkit-progress-bar {
+  background: transparent;
+}
+
+progress.usage-meter::-webkit-progress-value {
+  background: var(--progress-bar-fill, #38bdf8);
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.28s ease-out;
+}
+
+progress.usage-meter::-moz-progress-bar {
+  background: var(--progress-bar-fill, #38bdf8);
+  border-radius: var(--progress-bar-radius);
+  transition: inline-size 0.28s ease-out;
+}

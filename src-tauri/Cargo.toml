@@ -1,0 +1,25 @@
+[package]
+name = "my-usage"
+version = "0.2.0"
+description = "macOS Menu Bar AI Usage Tracker for Claude & AGY"
+authors = ["pao"]
+edition = "2021"
+
+[lib]
+name = "my_usage_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "macos-private-api", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+window-vibrancy = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+notify = "6"
+dirs = "5"
+walkdir = "2"
