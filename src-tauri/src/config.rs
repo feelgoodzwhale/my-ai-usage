@@ -16,6 +16,19 @@ impl Default for AgyQuotaMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaDisplayMode {
+    Remaining,
+    Used,
+}
+
+impl Default for QuotaDisplayMode {
+    fn default() -> Self {
+        Self::Remaining
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -24,7 +37,7 @@ pub struct AppConfig {
     pub claude_fallback_five_hour_limit: u64,
     pub claude_fallback_weekly_limit: u64,
     pub agy_quota_mode: AgyQuotaMode,
-    pub menubar_show_remaining: bool,
+    pub quota_display_mode: QuotaDisplayMode,
     pub notify_enabled: bool,
     pub notify_warn_pct: f64,
     pub notify_crit_pct: f64,
@@ -39,7 +52,7 @@ impl Default for AppConfig {
             claude_fallback_five_hour_limit: 500_000,
             claude_fallback_weekly_limit: 5_000_000,
             agy_quota_mode: AgyQuotaMode::ActiveOnly,
-            menubar_show_remaining: false,
+            quota_display_mode: QuotaDisplayMode::Remaining,
             notify_enabled: true,
             notify_warn_pct: 80.0,
             notify_crit_pct: 95.0,

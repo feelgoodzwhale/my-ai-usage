@@ -1,3 +1,4 @@
+use crate::config::QuotaDisplayMode;
 use crate::quota::{FullUsagePayload, ProviderUsageReport};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,25 +45,23 @@ fn rgb_for_tone(tone: AlertTone) -> (u8, u8, u8, bool) {
 }
 
 fn format_pct_compact(val: f64) -> String {
-    if val > 0.0 && val < 10.0 && (val.fract() * 10.0).round() != 0.0 {
-        format!("{:.1}%", val)
+    let clamped = val.clamp(0.0, 100.0);
+    if clamped >= 99.95 {
+        "100%".to_string()
+    } else if clamped <= 0.05 {
+        "0%".to_string()
+    } else if (clamped - clamped.round()).abs() >= 0.05 {
+        format!("{:.1}%", clamped)
     } else {
-        format!("{:.0}%", val)
+        format!("{:.0}%", clamped)
     }
 }
 
-fn format_tray_title(report: &ProviderUsageReport, show_remaining: bool) -> String {
-    if show_remaining {
-        if report.weekly.remaining_pct <= 0.01 && report.five_hour.remaining_pct > 0.01 {
-            return format!("{}·W0%", format_pct_compact(report.five_hour.remaining_pct));
-        }
-        return format_pct_compact(report.five_hour.remaining_pct);
+fn format_tray_title(report: &ProviderUsageReport, mode: QuotaDisplayMode) -> String {
+    match mode {
+        QuotaDisplayMode::Remaining => format_pct_compact(report.five_hour.remaining_pct),
+        QuotaDisplayMode::Used => format_pct_compact(report.five_hour.used_pct),
     }
-
-    if report.weekly.used_pct >= 99.95 && report.five_hour.used_pct < 99.95 {
-        return format!("{}·W100%", format_pct_compact(report.five_hour.used_pct));
-    }
-    format_pct_compact(report.five_hour.used_pct)
 }
 
 fn dist_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
@@ -181,7 +180,7 @@ pub fn init_trays(app: &AppHandle, tray_state: Arc<TrayUiState>) -> tauri::Resul
     TrayIconBuilder::with_id(CLAUDE_TRAY_ID)
         .icon(claude_icon)
         .icon_as_template(true)
-        .title("0%")
+        .title("100%")
         .on_tray_icon_event(move |tray, event| {
             handle_tray_event(tray.app_handle(), "claude", event, &st_claude);
         })
@@ -191,7 +190,7 @@ pub fn init_trays(app: &AppHandle, tray_state: Arc<TrayUiState>) -> tauri::Resul
     TrayIconBuilder::with_id(AGY_TRAY_ID)
         .icon(agy_icon)
         .icon_as_template(true)
-        .title("0%")
+        .title("100%")
         .on_tray_icon_event(move |tray, event| {
             handle_tray_event(tray.app_handle(), "agy", event, &st_agy);
         })
@@ -201,32 +200,22 @@ pub fn init_trays(app: &AppHandle, tray_state: Arc<TrayUiState>) -> tauri::Resul
 }
 
 pub fn update_trays(app: &AppHandle, payload: &FullUsagePayload) {
-    let show_rem = payload.config.menubar_show_remaining;
+    let mode = payload.config.quota_display_mode;
 
     if let Some(tray) = app.tray_by_id(CLAUDE_TRAY_ID) {
-        let max_used = payload
-            .claude
-            .five_hour
-            .used_pct
-            .max(payload.claude.weekly.used_pct);
-        let tone = tone_for_pct(max_used);
+        let tone = tone_for_pct(payload.claude.five_hour.used_pct);
         let (r, g, b, is_template) = rgb_for_tone(tone);
         let _ = tray.set_icon(Some(render_claude_icon(r, g, b)));
         let _ = tray.set_icon_as_template(is_template);
-        let _ = tray.set_title(Some(format_tray_title(&payload.claude, show_rem)));
+        let _ = tray.set_title(Some(format_tray_title(&payload.claude, mode)));
     }
 
     if let Some(tray) = app.tray_by_id(AGY_TRAY_ID) {
-        let max_used = payload
-            .agy
-            .five_hour
-            .used_pct
-            .max(payload.agy.weekly.used_pct);
-        let tone = tone_for_pct(max_used);
+        let tone = tone_for_pct(payload.agy.five_hour.used_pct);
         let (r, g, b, is_template) = rgb_for_tone(tone);
         let _ = tray.set_icon(Some(render_agy_icon(r, g, b)));
         let _ = tray.set_icon_as_template(is_template);
-        let _ = tray.set_title(Some(format_tray_title(&payload.agy, show_rem)));
+        let _ = tray.set_title(Some(format_tray_title(&payload.agy, mode)));
     }
 }
 
@@ -334,4 +323,51 @@ fn position_window_below_tray(win: &WebviewWindow, rect: &Rect, win_logical_widt
     }
 
     let _ = win.set_position(LogicalPosition::new(target_x, target_y));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::quota::QuotaWindowStatus;
+
+    #[test]
+    fn test_tray_title_defaults_to_remaining_and_only_shows_5h() {
+        assert_eq!(
+            AppConfig::default().quota_display_mode,
+            QuotaDisplayMode::Remaining
+        );
+
+        let claude = ProviderUsageReport {
+            five_hour: QuotaWindowStatus {
+                used_pct: 0.0,
+                remaining_pct: 100.0,
+                ..Default::default()
+            },
+            weekly: QuotaWindowStatus {
+                used_pct: 100.0,
+                remaining_pct: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(format_tray_title(&claude, QuotaDisplayMode::Remaining), "100%");
+        assert_eq!(format_tray_title(&claude, QuotaDisplayMode::Used), "0%");
+
+        let agy = ProviderUsageReport {
+            five_hour: QuotaWindowStatus {
+                used_pct: 1.60,
+                remaining_pct: 98.40,
+                ..Default::default()
+            },
+            weekly: QuotaWindowStatus {
+                used_pct: 22.02,
+                remaining_pct: 77.98,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Remaining), "98.4%");
+        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Used), "1.6%");
+    }
 }

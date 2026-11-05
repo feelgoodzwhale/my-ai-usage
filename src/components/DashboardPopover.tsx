@@ -2,6 +2,7 @@ import { CSSProperties, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Gauge, RefreshCw, Settings } from "lucide-react";
 import {
+  formatPctCompact,
   formatPctSmart,
   formatResetLabel,
   FullUsagePayload,
@@ -62,19 +63,11 @@ export function DashboardPopover({
   const activeProvider: ProviderId = activeTab === "agy" ? "agy" : "claude";
   const report = activeProvider === "claude" ? data.claude : data.agy;
   const currentRangeStats = report.ranges[rangeKey];
-  const showRem = data.config.menubar_show_remaining;
+  const displayMode = data.config.quota_display_mode;
+  const isRemaining = displayMode === "remaining";
 
-  const formatTabBadge = (r: typeof data.claude) => {
-    const val = showRem ? r.five_hour.remaining_pct : r.five_hour.used_pct;
-    const base =
-      val > 0 && val < 10 && Math.abs(val - Math.round(val)) >= 0.05
-        ? `${val.toFixed(1)}%`
-        : `${val.toFixed(0)}%`;
-    if (!showRem && r.weekly.used_pct >= 99.95 && r.five_hour.used_pct < 99.95) {
-      return `${base}·W100%`;
-    }
-    return base;
-  };
+  const formatTabBadge = (r: typeof data.claude) =>
+    formatPctCompact(isRemaining ? r.five_hour.remaining_pct : r.five_hour.used_pct);
 
   return (
     <div className="popover-shell w-full h-full flex flex-col overflow-hidden">
@@ -176,6 +169,7 @@ export function DashboardPopover({
                 window={report.five_hour}
                 provider={activeProvider}
                 nowEpochSec={nowEpochSec}
+                displayMode={displayMode}
               />
               <div className="border-t border-[var(--card-border)] pt-2.5">
                 <QuotaBar
@@ -183,6 +177,7 @@ export function DashboardPopover({
                   window={report.weekly}
                   provider={activeProvider}
                   nowEpochSec={nowEpochSec}
+                  displayMode={displayMode}
                   isWeekly
                 />
               </div>
@@ -201,14 +196,21 @@ export function DashboardPopover({
                     <span>โควต้าแยกตามกลุ่มโมเดล (/usage)</span>
                   </div>
                   <span className="text-[10px] text-[var(--text-muted)]">
-                    คงเหลือ (Remaining)
+                    {isRemaining ? "คงเหลือ (Remaining)" : "ใช้ไป (Used)"}
                   </span>
                 </div>
 
                 <div className="space-y-2">
                   {report.quota_groups.map((g, idx) => {
-                    const st = getStatusMeta(g.used_pct, activeProvider);
+                    const st = getStatusMeta(
+                      g.used_pct,
+                      activeProvider,
+                      displayMode
+                    );
                     const gid = `qgroup-${activeProvider}-${idx}`;
+                    const groupMeterVal = isRemaining
+                      ? g.remaining_pct
+                      : g.used_pct;
                     return (
                       <div key={g.key} className="space-y-1">
                         <div className="flex items-center justify-between text-[11px] gap-2">
@@ -216,17 +218,29 @@ export function DashboardPopover({
                             {g.label}
                           </span>
                           <span className="tabular-nums shrink-0 text-[var(--text-muted)]">
-                            เหลือ{" "}
-                            <strong className="text-[var(--text-main)]">
-                              {formatPctSmart(g.remaining_pct, true)}
-                            </strong>{" "}
-                            (ใช้ {formatPctSmart(g.used_pct, true)})
+                            {isRemaining ? (
+                              <>
+                                คงเหลือ{" "}
+                                <strong className="text-[var(--text-main)]">
+                                  {formatPctSmart(g.remaining_pct, true)}
+                                </strong>{" "}
+                                (ใช้ไป {formatPctSmart(g.used_pct, true)})
+                              </>
+                            ) : (
+                              <>
+                                ใช้ไป{" "}
+                                <strong className="text-[var(--text-main)]">
+                                  {formatPctSmart(g.used_pct, true)}
+                                </strong>{" "}
+                                (เหลือ {formatPctSmart(g.remaining_pct, true)})
+                              </>
+                            )}
                           </span>
                         </div>
                         <progress
                           className="usage-meter"
                           max={100}
-                          value={Math.min(100, Math.max(0, g.used_pct))}
+                          value={Math.min(100, Math.max(0, groupMeterVal))}
                           aria-labelledby={gid}
                           style={
                             {

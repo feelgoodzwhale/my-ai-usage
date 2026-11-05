@@ -1,6 +1,7 @@
 export type ProviderId = "claude" | "agy";
 export type RangeKey = "five_hour" | "today" | "seven_day" | "thirty_day";
 export type AgyQuotaMode = "active_only" | "weighted_cache" | "include_all_cache";
+export type QuotaDisplayMode = "remaining" | "used";
 
 export interface QuotaWindowStatus {
   used_pct: number;
@@ -83,7 +84,7 @@ export interface AppConfig {
   claude_fallback_five_hour_limit: number;
   claude_fallback_weekly_limit: number;
   agy_quota_mode: AgyQuotaMode;
-  menubar_show_remaining: boolean;
+  quota_display_mode: QuotaDisplayMode;
   notify_enabled: boolean;
   notify_warn_pct: number;
   notify_crit_pct: number;
@@ -98,16 +99,30 @@ export interface FullUsagePayload {
 }
 
 export function formatPctSmart(pct: number, exact = false): string {
+  const clamped = Math.min(100, Math.max(0, pct));
   if (exact) {
-    return `${pct.toFixed(2)}%`;
+    return `${clamped.toFixed(2)}%`;
   }
-  if (pct === 0 || pct === 100) {
-    return `${pct.toFixed(0)}%`;
+  if (clamped >= 99.995) {
+    return "100%";
   }
-  if (Math.abs(pct - Math.round(pct)) < 0.05) {
-    return `${Math.round(pct)}%`;
+  if (clamped <= 0.005) {
+    return "0%";
   }
-  return `${pct.toFixed(2)}%`;
+  if (Math.abs(clamped - Math.round(clamped)) < 0.05) {
+    return `${Math.round(clamped)}%`;
+  }
+  return `${clamped.toFixed(2)}%`;
+}
+
+export function formatPctCompact(val: number): string {
+  const clamped = Math.min(100, Math.max(0, val));
+  if (clamped >= 99.95) return "100%";
+  if (clamped <= 0.05) return "0%";
+  if (Math.abs(clamped - Math.round(clamped)) >= 0.05) {
+    return `${clamped.toFixed(1)}%`;
+  }
+  return `${Math.round(clamped)}%`;
 }
 
 export function formatTokens(n: number): string {
@@ -128,7 +143,7 @@ export function formatResetLabel(
   }
   const diff = resetsAt - nowEpochSec;
   if (diff <= 0) {
-    return "รีเซ็ตแล้ว (0%)";
+    return "ครบรอบรีเซ็ตแล้ว (พร้อมใช้งาน)";
   }
 
   const d = new Date(resetsAt * 1000);
@@ -147,21 +162,33 @@ export function formatResetLabel(
   return `Reset ${hh}:${mm} (อีก ${countdown})`;
 }
 
-export function getStatusMeta(pct: number, provider: ProviderId) {
-  if (pct >= 90) {
+export function getStatusMeta(
+  usedPct: number,
+  provider: ProviderId,
+  displayMode: QuotaDisplayMode = "remaining"
+) {
+  if (usedPct >= 90) {
+    const badge =
+      displayMode === "remaining"
+        ? usedPct >= 99.95
+          ? "หมดโควต้า"
+          : "เหลือต่ำ"
+        : usedPct >= 99.95
+          ? "เต็มโควต้า"
+          : "ใกล้เต็ม";
     return {
       level: "critical" as const,
-      badge: pct >= 99.95 ? "เต็มโควต้า" : "ใกล้เต็ม",
+      badge,
       fill: "#ef4444",
       textClass: "text-red-500 dark:text-red-400",
       badgeClass:
         "bg-red-500/15 text-red-600 dark:text-red-300 border border-red-500/35",
     };
   }
-  if (pct >= 75) {
+  if (usedPct >= 75) {
     return {
       level: "warning" as const,
-      badge: "เริ่มตึง",
+      badge: displayMode === "remaining" ? "เริ่มเหลือน้อย" : "เริ่มตึง",
       fill: "#f59e0b",
       textClass: "text-amber-600 dark:text-amber-400",
       badgeClass:

@@ -18,8 +18,9 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
   }
 
   const report = provider === "claude" ? data.claude : data.agy;
+  const displayMode = data.config.quota_display_mode;
   const maxUsed = Math.max(report.five_hour.used_pct, report.weekly.used_pct);
-  const status = getStatusMeta(maxUsed, provider);
+  const status = getStatusMeta(maxUsed, provider, displayMode);
 
   return (
     <div className="popover-shell w-full h-full p-3 flex flex-col justify-between">
@@ -46,6 +47,7 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
           window={report.five_hour}
           provider={provider}
           nowEpochSec={nowEpochSec}
+          displayMode={displayMode}
           compact
         />
         <QuotaBar
@@ -53,6 +55,7 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
           window={report.weekly}
           provider={provider}
           nowEpochSec={nowEpochSec}
+          displayMode={displayMode}
           isWeekly
           compact
         />

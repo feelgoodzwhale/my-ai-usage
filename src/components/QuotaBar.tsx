@@ -6,6 +6,7 @@ import {
   formatTokens,
   getStatusMeta,
   ProviderId,
+  QuotaDisplayMode,
   QuotaWindowStatus,
 } from "../types/usage";
 
@@ -14,6 +15,7 @@ interface QuotaBarProps {
   window: QuotaWindowStatus;
   provider: ProviderId;
   nowEpochSec: number;
+  displayMode?: QuotaDisplayMode;
   isWeekly?: boolean;
   compact?: boolean;
 }
@@ -23,12 +25,15 @@ export function QuotaBar({
   window,
   provider,
   nowEpochSec,
+  displayMode = "remaining",
   isWeekly = false,
   compact = false,
 }: QuotaBarProps) {
   const labelId = useId();
-  const status = getStatusMeta(window.used_pct, provider);
-  const clampedValue = Math.min(100, Math.max(0, window.used_pct));
+  const isRemaining = displayMode === "remaining";
+  const status = getStatusMeta(window.used_pct, provider, displayMode);
+  const meterRaw = isRemaining ? window.remaining_pct : window.used_pct;
+  const clampedValue = Math.min(100, Math.max(0, meterRaw));
 
   const StatusIcon =
     status.level === "critical"
@@ -66,10 +71,14 @@ export function QuotaBar({
             />
           )}
           <span className={`text-xs font-bold ${status.textClass}`}>
-            ใช้ไป {formatPctSmart(window.used_pct)}
+            {isRemaining
+              ? `คงเหลือ ${formatPctSmart(window.remaining_pct)}`
+              : `ใช้ไป ${formatPctSmart(window.used_pct)}`}
           </span>
           <span className="text-[10px] text-[var(--text-muted)]">
-            (เหลือ {formatPctSmart(window.remaining_pct)})
+            {isRemaining
+              ? `(ใช้ไป ${formatPctSmart(window.used_pct)})`
+              : `(เหลือ ${formatPctSmart(window.remaining_pct)})`}
           </span>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   disable as disableAutostart,
@@ -6,7 +6,12 @@ import {
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
 import { Check, Power, Save } from "lucide-react";
-import { AgyQuotaMode, AppConfig, FullUsagePayload } from "../types/usage";
+import {
+  AgyQuotaMode,
+  AppConfig,
+  FullUsagePayload,
+  QuotaDisplayMode,
+} from "../types/usage";
 
 interface SettingsPanelProps {
   config: AppConfig;
@@ -17,6 +22,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
   const [draft, setDraft] = useState<AppConfig>(config);
   const [autostart, setAutostart] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     setDraft(config);
@@ -41,13 +47,31 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
     }
   };
 
-  const handleSave = async () => {
-    const updated = await invoke<FullUsagePayload>("save_app_config", {
-      config: draft,
-    });
-    onUpdated(updated);
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 1800);
+  const persistConfig = async (nextConfig: AppConfig, showToast = true) => {
+    setIsSubmitting(true);
+    try {
+      const updated = await invoke<FullUsagePayload>("save_app_config", {
+        config: nextConfig,
+      });
+      onUpdated(updated);
+      if (showToast) {
+        setSavedToast(true);
+        setTimeout(() => setSavedToast(false), 1800);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDisplayModeChange = (mode: QuotaDisplayMode) => {
+    const next = { ...draft, quota_display_mode: mode };
+    setDraft(next);
+    void persistConfig(next, false);
+  };
+
+  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    void persistConfig(draft, true);
   };
 
   const handleQuit = async () => {
@@ -62,25 +86,84 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
   ];
 
   return (
-    <div className="space-y-3 pb-1">
-      <div className="glass-card p-3 space-y-2">
-        <div className="text-xs font-semibold">การแสดงผลบน Menu Bar</div>
-        <label className="flex items-center justify-between text-xs cursor-pointer gap-2">
-          <span>แสดงเป็น % คงเหลือ (Remaining %) แทน % ที่ใช้ไป</span>
-          <input
-            type="checkbox"
-            checked={draft.menubar_show_remaining}
-            onChange={(e) =>
-              setDraft({ ...draft, menubar_show_remaining: e.target.checked })
-            }
-          />
-        </label>
-      </div>
+    <form onSubmit={handleSubmit} className="space-y-3 pb-1">
+      <fieldset className="glass-card p-3 space-y-2 border-0 m-0 min-w-0">
+        <legend className="text-xs font-semibold p-0 mb-1.5">
+          รูปแบบการแสดงผลโควต้า (Quota Display)
+        </legend>
 
-      <div className="glass-card p-3 space-y-2.5">
-        <div className="text-xs font-semibold">
+        <label
+          htmlFor="display-mode-remaining"
+          className={`flex items-start gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
+            draft.quota_display_mode === "remaining"
+              ? "border-sky-500/50 bg-sky-500/10"
+              : "border-[var(--card-border)] hover:bg-[var(--meter-track)]"
+          }`}
+        >
+          <input
+            id="display-mode-remaining"
+            type="radio"
+            name="quota_display_mode"
+            value="remaining"
+            checked={draft.quota_display_mode === "remaining"}
+            onChange={() => handleDisplayModeChange("remaining")}
+            aria-describedby="desc-mode-remaining"
+            className="mt-0.5 shrink-0"
+          />
+          <span className="space-y-0.5">
+            <span className="block font-semibold text-[var(--text-main)]">
+              คงเหลือเท่าไร (Remaining %) · ค่าเริ่มต้น
+            </span>
+            <span
+              id="desc-mode-remaining"
+              className="block text-[11px] text-[var(--text-muted)]"
+            >
+              จาก 100% ตอนนี้เหลือเท่าไร (เช่น 98.4%)
+            </span>
+          </span>
+        </label>
+
+        <label
+          htmlFor="display-mode-used"
+          className={`flex items-start gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
+            draft.quota_display_mode === "used"
+              ? "border-sky-500/50 bg-sky-500/10"
+              : "border-[var(--card-border)] hover:bg-[var(--meter-track)]"
+          }`}
+        >
+          <input
+            id="display-mode-used"
+            type="radio"
+            name="quota_display_mode"
+            value="used"
+            checked={draft.quota_display_mode === "used"}
+            onChange={() => handleDisplayModeChange("used")}
+            aria-describedby="desc-mode-used"
+            className="mt-0.5 shrink-0"
+          />
+          <span className="space-y-0.5">
+            <span className="block font-semibold text-[var(--text-main)]">
+              ใช้ไปเท่าไร (Used %)
+            </span>
+            <span
+              id="desc-mode-used"
+              className="block text-[11px] text-[var(--text-muted)]"
+            >
+              ใช้ไปแล้วกี่เปอร์เซ็นต์จากโควต้า (เช่น 1.6%)
+            </span>
+          </span>
+        </label>
+
+        <p className="text-[10px] text-[var(--text-muted)] pt-0.5 leading-relaxed">
+          บน Menu Bar จะแสดงเฉพาะโควต้ารอบ 5 ชั่วโมงเท่านั้น ส่วน Weekly Limit
+          ดูได้ทันทีเมื่อนำเมาส์ไปชี้ (Hover) หรือคลิกเปิดแอพ
+        </p>
+      </fieldset>
+
+      <fieldset className="glass-card p-3 space-y-2.5 border-0 m-0 min-w-0">
+        <legend className="text-xs font-semibold p-0 mb-1">
           เพดาน Token สำรอง (Fallback กรณีไม่มี Official Quota)
-        </div>
+        </legend>
 
         <div className="space-y-1">
           <label
@@ -94,6 +177,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           </label>
           <input
             id="agy-5h-limit"
+            name="agy_five_hour_limit"
             type="number"
             min={10_000}
             step={50_000}
@@ -134,6 +218,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           </label>
           <input
             id="agy-7d-limit"
+            name="agy_weekly_limit"
             type="number"
             min={50_000}
             step={250_000}
@@ -157,6 +242,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           </label>
           <select
             id="agy-quota-mode"
+            name="agy_quota_mode"
             value={draft.agy_quota_mode}
             onChange={(e) =>
               setDraft({
@@ -177,14 +263,21 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
             </option>
           </select>
         </div>
-      </div>
+      </fieldset>
 
-      <div className="glass-card p-3 space-y-2">
-        <div className="text-xs font-semibold">ระบบแจ้งเตือน & macOS</div>
+      <fieldset className="glass-card p-3 space-y-2 border-0 m-0 min-w-0">
+        <legend className="text-xs font-semibold p-0 mb-1">
+          ระบบแจ้งเตือน & macOS
+        </legend>
 
-        <label className="flex items-center justify-between text-xs cursor-pointer">
-          <span>แจ้งเตือนเมื่อโควต้าแตะ 80% / 95%</span>
+        <label
+          htmlFor="notify-enabled"
+          className="flex items-center justify-between text-xs cursor-pointer"
+        >
+          <span>แจ้งเตือนเมื่อโควต้าแตะ 80% / 95% (เหลือ 20% / 5%)</span>
           <input
+            id="notify-enabled"
+            name="notify_enabled"
             type="checkbox"
             checked={draft.notify_enabled}
             onChange={(e) =>
@@ -193,9 +286,14 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs cursor-pointer">
-          <span>แจ้งเตือนเมื่อครบรอบ Reset เป็น 0%</span>
+        <label
+          htmlFor="notify-on-reset"
+          className="flex items-center justify-between text-xs cursor-pointer"
+        >
+          <span>แจ้งเตือนเมื่อครบรอบ Reset โควต้าเต็ม 100%</span>
           <input
+            id="notify-on-reset"
+            name="notify_on_reset"
             type="checkbox"
             checked={draft.notify_on_reset}
             onChange={(e) =>
@@ -204,15 +302,20 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs cursor-pointer">
+        <label
+          htmlFor="autostart-enabled"
+          className="flex items-center justify-between text-xs cursor-pointer"
+        >
           <span>เปิดแอพอัตโนมัติเมื่อเปิดเครื่อง (Launch at Login)</span>
           <input
+            id="autostart-enabled"
+            name="autostart_enabled"
             type="checkbox"
             checked={autostart}
             onChange={(e) => toggleAutostart(e.target.checked)}
           />
         </label>
-      </div>
+      </fieldset>
 
       <div className="flex items-center justify-between gap-2 pt-0.5">
         <button
@@ -225,9 +328,9 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
         </button>
 
         <button
-          type="button"
-          onClick={handleSave}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 cursor-pointer"
+          type="submit"
+          disabled={isSubmitting}
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 disabled:opacity-60 cursor-pointer"
         >
           {savedToast ? (
             <>
@@ -242,6 +345,6 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
           )}
         </button>
       </div>
-    </div>
+    </form>
   );
 }
