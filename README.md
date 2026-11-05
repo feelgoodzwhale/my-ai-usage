@@ -1,4 +1,4 @@
-# my-usage
+# my-ai-usage
 
 macOS Menu Bar utility สร้างด้วย **Rust (Tauri v2)** + **React + TypeScript + Tailwind CSS** สำหรับแสดงข้อมูลการใช้งาน **Claude** และ **AGY (Google Antigravity)** แบบเรียลไทม์จากข้อมูล Local บนเครื่อง
 
