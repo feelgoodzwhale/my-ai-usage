@@ -12,7 +12,28 @@ macOS Menu Bar utility สร้างด้วย **Rust (Tauri v2)** + **React
   - **Model Breakdown:** สัดส่วนการใช้งานแยกตามรุ่นโมเดล
   - **Settings:** ปรับเพดาน Token ของ AGY, เลือกสูตรคำนวณ Cache, เปิด/ปิด macOS Notification (`80%` / `95%` / `Reset`) และ `Launch at Login`
 
-## คำสั่งใช้งาน
+## ติดตั้งอย่างรวดเร็ว (Quick Install บน macOS)
+
+ติดตั้งด้วยคำสั่งเดียวผ่าน Terminal (ดาวน์โหลดจาก GitHub Releases อัตโนมัติ หรือคอมไพล์จากซอร์สโค้ดให้หากยังไม่มีไฟล์ Release พร้อมคัดลอกเข้า `/Applications` และเปิดใช้งานทันที):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/feelgoodzwhale/my-ai-usage/main/install.sh | bash
+```
+
+หรือหากโคลนโปรเจกต์ลงเครื่องแล้ว:
+
+```bash
+git clone https://github.com/feelgoodzwhale/my-ai-usage.git
+cd my-ai-usage
+./install.sh
+```
+
+ตัวเลือกเพิ่มเติมของ `install.sh`:
+- `./install.sh --from-source` — บังคับคอมไพล์ใหม่จากซอร์สโค้ด
+- `./install.sh --no-hook` — ติดตั้งแอพโดยไม่แก้สคริปต์ `statusLine`
+- `./install.sh --uninstall` — ปิดแอพ ลบออกจาก `/Applications` และคืนค่า `statusLine` เดิม
+
+## คำสั่งสำหรับนักพัฒนา (Development)
 
 ```bash
 # โหมดพัฒนา (Hot Reload)

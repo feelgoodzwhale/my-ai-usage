@@ -3,7 +3,7 @@ set -euo pipefail
 
 TARGET_SCRIPT="$HOME/.claude/statusline-command.sh"
 DATA_DIR="$HOME/.local/share/my-usage"
-mkdir -p "$DATA_DIR"
+mkdir -p "$HOME/.claude" "$DATA_DIR"
 
 if [ -f "$TARGET_SCRIPT" ] && ! grep -q "my-usage statusline snapshot" "$TARGET_SCRIPT"; then
   cp "$TARGET_SCRIPT" "${TARGET_SCRIPT}.my-usage.bak"
@@ -56,4 +56,24 @@ printf "%b" "$out"
 EOF
 
 chmod +x "$TARGET_SCRIPT"
-echo "Updated $TARGET_SCRIPT (backup at ${TARGET_SCRIPT}.my-usage.bak)"
+
+# Ensure ~/.claude/settings.json has statusLine configured if jq is available and statusLine is missing
+if command -v jq >/dev/null 2>&1; then
+  CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+  if [ -f "$CLAUDE_SETTINGS" ]; then
+    if ! jq -e '.statusLine != null' "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
+      jq '. + {statusLine: {type: "command", command: "bash ~/.claude/statusline-command.sh"}}' "$CLAUDE_SETTINGS" > "${CLAUDE_SETTINGS}.tmp" \
+        && mv -f "${CLAUDE_SETTINGS}.tmp" "$CLAUDE_SETTINGS"
+    fi
+  fi
+
+  AGY_SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
+  if [ -f "$AGY_SETTINGS" ]; then
+    if ! jq -e '.statusLine != null' "$AGY_SETTINGS" >/dev/null 2>&1; then
+      jq '. + {statusLine: {type: "command", command: "bash ~/.claude/statusline-command.sh", enabled: true}}' "$AGY_SETTINGS" > "${AGY_SETTINGS}.tmp" \
+        && mv -f "${AGY_SETTINGS}.tmp" "$AGY_SETTINGS"
+    fi
+  fi
+fi
+
+echo "Updated $TARGET_SCRIPT"
