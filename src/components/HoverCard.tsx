@@ -18,7 +18,8 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
   }
 
   const report = provider === "claude" ? data.claude : data.agy;
-  const status = getStatusMeta(report.five_hour.used_pct, provider);
+  const maxUsed = Math.max(report.five_hour.used_pct, report.weekly.used_pct);
+  const status = getStatusMeta(maxUsed, provider);
 
   return (
     <div className="popover-shell w-full h-full p-3 flex flex-col justify-between">

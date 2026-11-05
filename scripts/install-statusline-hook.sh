@@ -13,17 +13,33 @@ cat > "$TARGET_SCRIPT" << 'EOF'
 #!/bin/bash
 input=$(cat)
 
-# --- my-ai-usage statusline snapshot (non-blocking atomic write) ---
+# --- my-ai-usage statusline snapshot (non-blocking atomic merge write) ---
 {
   DATA_DIR="$HOME/.local/share/my-ai-usage"
   mkdir -p "$DATA_DIR" 2>/dev/null
   NOW_TS=$(date +%s)
-  if echo "$input" | jq -e '.agent_state != null or .plan_tier != null or .cli_version != null' >/dev/null 2>&1; then
-    echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "$DATA_DIR/agy-status.json.tmp" 2>/dev/null \
-      && mv -f "$DATA_DIR/agy-status.json.tmp" "$DATA_DIR/agy-status.json" 2>/dev/null
+  if echo "$input" | jq -e '.product == "antigravity" or .quota != null or .agent_state != null or .plan_tier != null or .cli_version != null' >/dev/null 2>&1; then
+    DEST="$DATA_DIR/agy-status.json"
+    if [ -f "$DEST" ]; then
+      echo "$input" | jq -c --slurpfile prev "$DEST" --argjson ts "$NOW_TS" '
+        ($prev[0].quota // null) as $pq |
+        . + (if .quota != null then {} elif $pq != null then {quota: $pq} else {} end) + {_captured_at: $ts}
+      ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+    else
+      echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "${DEST}.tmp" 2>/dev/null \
+        && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+    fi
   elif echo "$input" | jq -e '.rate_limits != null or .session_id != null or .cost != null' >/dev/null 2>&1; then
-    echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "$DATA_DIR/claude-status.json.tmp" 2>/dev/null \
-      && mv -f "$DATA_DIR/claude-status.json.tmp" "$DATA_DIR/claude-status.json" 2>/dev/null
+    DEST="$DATA_DIR/claude-status.json"
+    if [ -f "$DEST" ]; then
+      echo "$input" | jq -c --slurpfile prev "$DEST" --argjson ts "$NOW_TS" '
+        ($prev[0].rate_limits // null) as $prl |
+        . + (if .rate_limits != null then {} elif $prl != null then {rate_limits: $prl} else {} end) + {_captured_at: $ts}
+      ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+    else
+      echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "${DEST}.tmp" 2>/dev/null \
+        && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+    fi
   fi
 } >/dev/null 2>&1 &
 # --- end my-ai-usage statusline snapshot ---
@@ -57,7 +73,6 @@ EOF
 
 chmod +x "$TARGET_SCRIPT"
 
-# Ensure ~/.claude/settings.json has statusLine configured if jq is available and statusLine is missing
 if command -v jq >/dev/null 2>&1; then
   CLAUDE_SETTINGS="$HOME/.claude/settings.json"
   if [ -f "$CLAUDE_SETTINGS" ]; then

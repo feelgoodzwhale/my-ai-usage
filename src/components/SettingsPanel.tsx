@@ -63,15 +63,31 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
 
   return (
     <div className="space-y-3 pb-1">
+      <div className="glass-card p-3 space-y-2">
+        <div className="text-xs font-semibold">การแสดงผลบน Menu Bar</div>
+        <label className="flex items-center justify-between text-xs cursor-pointer gap-2">
+          <span>แสดงเป็น % คงเหลือ (Remaining %) แทน % ที่ใช้ไป</span>
+          <input
+            type="checkbox"
+            checked={draft.menubar_show_remaining}
+            onChange={(e) =>
+              setDraft({ ...draft, menubar_show_remaining: e.target.checked })
+            }
+          />
+        </label>
+      </div>
+
       <div className="glass-card p-3 space-y-2.5">
-        <div className="text-xs font-semibold">เพดานโควต้า AGY (Token Budget)</div>
+        <div className="text-xs font-semibold">
+          เพดาน Token สำรอง (Fallback กรณีไม่มี Official Quota)
+        </div>
 
         <div className="space-y-1">
           <label
             htmlFor="agy-5h-limit"
             className="flex justify-between text-[11px] text-[var(--text-muted)]"
           >
-            <span>เพดานรอบ 5 ชั่วโมง (Tokens)</span>
+            <span>เพดาน AGY รอบ 5 ชั่วโมง (Tokens)</span>
             <span className="tabular-nums font-medium text-[var(--text-main)]">
               {draft.agy_five_hour_limit.toLocaleString()}
             </span>
@@ -111,7 +127,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
             htmlFor="agy-7d-limit"
             className="flex justify-between text-[11px] text-[var(--text-muted)]"
           >
-            <span>เพดานรายสัปดาห์ 7 วัน (Tokens)</span>
+            <span>เพดาน AGY รายสัปดาห์ 7 วัน (Tokens)</span>
             <span className="tabular-nums font-medium text-[var(--text-main)]">
               {draft.agy_weekly_limit.toLocaleString()}
             </span>
@@ -137,7 +153,7 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
             htmlFor="agy-quota-mode"
             className="block text-[11px] text-[var(--text-muted)]"
           >
-            วิธีคำนวณ % โควต้า AGY
+            วิธีคำนวณ Token สำรอง
           </label>
           <select
             id="agy-quota-mode"

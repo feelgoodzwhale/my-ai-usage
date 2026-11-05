@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { CSSProperties, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, Settings } from "lucide-react";
+import { Gauge, RefreshCw, Settings } from "lucide-react";
 import {
+  formatPctSmart,
+  formatResetLabel,
   FullUsagePayload,
+  getStatusMeta,
   ProviderId,
   RangeKey,
 } from "../types/usage";
@@ -56,10 +59,22 @@ export function DashboardPopover({
     );
   }
 
-  const activeProvider: ProviderId =
-    activeTab === "agy" ? "agy" : "claude";
+  const activeProvider: ProviderId = activeTab === "agy" ? "agy" : "claude";
   const report = activeProvider === "claude" ? data.claude : data.agy;
   const currentRangeStats = report.ranges[rangeKey];
+  const showRem = data.config.menubar_show_remaining;
+
+  const formatTabBadge = (r: typeof data.claude) => {
+    const val = showRem ? r.five_hour.remaining_pct : r.five_hour.used_pct;
+    const base =
+      val > 0 && val < 10 && Math.abs(val - Math.round(val)) >= 0.05
+        ? `${val.toFixed(1)}%`
+        : `${val.toFixed(0)}%`;
+    if (!showRem && r.weekly.used_pct >= 99.95 && r.five_hour.used_pct < 99.95) {
+      return `${base}·W100%`;
+    }
+    return base;
+  };
 
   return (
     <div className="popover-shell w-full h-full flex flex-col overflow-hidden">
@@ -78,7 +93,7 @@ export function DashboardPopover({
             <BrandIcon provider="claude" size={13} />
             <span>Claude</span>
             <span className="text-[10px] opacity-80 tabular-nums">
-              {data.claude.five_hour.used_pct.toFixed(0)}%
+              {formatTabBadge(data.claude)}
             </span>
           </button>
 
@@ -94,7 +109,7 @@ export function DashboardPopover({
             <BrandIcon provider="agy" size={13} />
             <span>AGY</span>
             <span className="text-[10px] opacity-80 tabular-nums">
-              {data.agy.five_hour.used_pct.toFixed(0)}%
+              {formatTabBadge(data.agy)}
             </span>
           </button>
         </div>
@@ -139,7 +154,7 @@ export function DashboardPopover({
         ) : (
           <>
             {/* Active Model & Source Subtitle */}
-            <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] px-0.5">
+            <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] px-0.5 gap-2">
               <span className="truncate">
                 โมเดลล่าสุด:{" "}
                 <strong className="text-[var(--text-main)]">
@@ -147,8 +162,9 @@ export function DashboardPopover({
                 </strong>
               </span>
               <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-[var(--meter-track)]">
-                {report.five_hour.source === "official"
-                  ? "Official Quota"
+                {report.five_hour.source === "official" ||
+                report.weekly.source === "official"
+                  ? `${report.plan_label} (Official)`
                   : "Local 5h Block"}
               </span>
             </div>
@@ -171,6 +187,67 @@ export function DashboardPopover({
                 />
               </div>
             </div>
+
+            {/* Detailed Official Quota Groups (e.g. AGY Gemini / Argon / Claude & GPT) */}
+            {report.quota_groups.length > 2 && (
+              <div className="glass-card p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold">
+                    <Gauge
+                      size={13}
+                      aria-hidden="true"
+                      className="text-[var(--text-muted)]"
+                    />
+                    <span>โควต้าแยกตามกลุ่มโมเดล (/usage)</span>
+                  </div>
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    คงเหลือ (Remaining)
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {report.quota_groups.map((g, idx) => {
+                    const st = getStatusMeta(g.used_pct, activeProvider);
+                    const gid = `qgroup-${activeProvider}-${idx}`;
+                    return (
+                      <div key={g.key} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] gap-2">
+                          <span id={gid} className="font-medium truncate">
+                            {g.label}
+                          </span>
+                          <span className="tabular-nums shrink-0 text-[var(--text-muted)]">
+                            เหลือ{" "}
+                            <strong className="text-[var(--text-main)]">
+                              {formatPctSmart(g.remaining_pct, true)}
+                            </strong>{" "}
+                            (ใช้ {formatPctSmart(g.used_pct, true)})
+                          </span>
+                        </div>
+                        <progress
+                          className="usage-meter"
+                          max={100}
+                          value={Math.min(100, Math.max(0, g.used_pct))}
+                          aria-labelledby={gid}
+                          style={
+                            {
+                              "--progress-bar-fill": st.fill,
+                              "--progress-height": "5px",
+                            } as CSSProperties
+                          }
+                        />
+                        <div className="text-[10px] text-[var(--text-muted)]">
+                          {formatResetLabel(
+                            g.resets_at,
+                            nowEpochSec,
+                            g.window_kind === "weekly"
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Time Range Filter Pills */}
             <div className="flex items-center justify-between gap-1 p-0.5 rounded-lg bg-[var(--meter-track)]">

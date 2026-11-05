@@ -4,10 +4,20 @@ export type AgyQuotaMode = "active_only" | "weighted_cache" | "include_all_cache
 
 export interface QuotaWindowStatus {
   used_pct: number;
+  remaining_pct: number;
   used_tokens: number;
   limit_tokens: number | null;
   resets_at: number | null;
   source: "official" | "local_block" | string;
+}
+
+export interface SubQuotaBucket {
+  key: string;
+  label: string;
+  window_kind: "5h" | "weekly" | string;
+  used_pct: number;
+  remaining_pct: number;
+  resets_at: number | null;
 }
 
 export interface TokenSummary {
@@ -60,6 +70,7 @@ export interface ProviderUsageReport {
   active_model: string | null;
   five_hour: QuotaWindowStatus;
   weekly: QuotaWindowStatus;
+  quota_groups: SubQuotaBucket[];
   ranges: ProviderRanges;
   hourly_24h: TrendBucket[];
   daily_30d: TrendBucket[];
@@ -72,6 +83,7 @@ export interface AppConfig {
   claude_fallback_five_hour_limit: number;
   claude_fallback_weekly_limit: number;
   agy_quota_mode: AgyQuotaMode;
+  menubar_show_remaining: boolean;
   notify_enabled: boolean;
   notify_warn_pct: number;
   notify_crit_pct: number;
@@ -83,6 +95,19 @@ export interface FullUsagePayload {
   agy: ProviderUsageReport;
   config: AppConfig;
   generated_at: number;
+}
+
+export function formatPctSmart(pct: number, exact = false): string {
+  if (exact) {
+    return `${pct.toFixed(2)}%`;
+  }
+  if (pct === 0 || pct === 100) {
+    return `${pct.toFixed(0)}%`;
+  }
+  if (Math.abs(pct - Math.round(pct)) < 0.05) {
+    return `${Math.round(pct)}%`;
+  }
+  return `${pct.toFixed(2)}%`;
 }
 
 export function formatTokens(n: number): string {
@@ -99,7 +124,7 @@ export function formatResetLabel(
   isWeekly = false
 ): string {
   if (!resetsAt) {
-    return "พร้อมเริ่มรอบใหม่";
+    return "ยังไม่เริ่มนับเวลา (พร้อมใช้งาน)";
   }
   const diff = resetsAt - nowEpochSec;
   if (diff <= 0) {
@@ -109,18 +134,16 @@ export function formatResetLabel(
   const d = new Date(resetsAt * 1000);
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
+  const totalHours = Math.floor(diff / 3600);
+  const mins = Math.floor((diff % 3600) / 60);
+  const countdown = totalHours > 0 ? `${totalHours}h ${mins}m` : `${mins}m`;
 
   if (isWeekly) {
-    const days = Math.floor(diff / 86400);
-    const hours = Math.floor((diff % 86400) / 3600);
-    const weekday = d.toLocaleDateString("th-TH", { weekday: "short" });
-    const countdown = days > 0 ? `${days}d ${hours}h` : `${hours}h`;
-    return `Reset ${weekday} ${hh}:${mm} (${countdown})`;
+    const weekday = d.toLocaleDateString("en-US", { weekday: "short" });
+    const dayNum = String(d.getDate()).padStart(2, "0");
+    return `Reset ${weekday} ${dayNum} ${hh}:${mm} (${countdown})`;
   }
 
-  const hours = Math.floor(diff / 3600);
-  const mins = Math.floor((diff % 3600) / 60);
-  const countdown = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
   return `Reset ${hh}:${mm} (อีก ${countdown})`;
 }
 
@@ -128,7 +151,7 @@ export function getStatusMeta(pct: number, provider: ProviderId) {
   if (pct >= 90) {
     return {
       level: "critical" as const,
-      badge: "ใกล้เต็ม",
+      badge: pct >= 99.95 ? "เต็มโควต้า" : "ใกล้เต็ม",
       fill: "#ef4444",
       textClass: "text-red-500 dark:text-red-400",
       badgeClass:

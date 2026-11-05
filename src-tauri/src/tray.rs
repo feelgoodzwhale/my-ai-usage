@@ -1,4 +1,4 @@
-use crate::quota::FullUsagePayload;
+use crate::quota::{FullUsagePayload, ProviderUsageReport};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,11 +37,32 @@ fn tone_for_pct(pct: f64) -> AlertTone {
 
 fn rgb_for_tone(tone: AlertTone) -> (u8, u8, u8, bool) {
     match tone {
-        // Template mode uses alpha channel; macOS automatically paints white/black to match menu bar
         AlertTone::Normal => (0, 0, 0, true),
         AlertTone::Warning => (245, 158, 11, false),
         AlertTone::Critical => (239, 68, 68, false),
     }
+}
+
+fn format_pct_compact(val: f64) -> String {
+    if val > 0.0 && val < 10.0 && (val.fract() * 10.0).round() != 0.0 {
+        format!("{:.1}%", val)
+    } else {
+        format!("{:.0}%", val)
+    }
+}
+
+fn format_tray_title(report: &ProviderUsageReport, show_remaining: bool) -> String {
+    if show_remaining {
+        if report.weekly.remaining_pct <= 0.01 && report.five_hour.remaining_pct > 0.01 {
+            return format!("{}·W0%", format_pct_compact(report.five_hour.remaining_pct));
+        }
+        return format_pct_compact(report.five_hour.remaining_pct);
+    }
+
+    if report.weekly.used_pct >= 99.95 && report.five_hour.used_pct < 99.95 {
+        return format!("{}·W100%", format_pct_compact(report.five_hour.used_pct));
+    }
+    format_pct_compact(report.five_hour.used_pct)
 }
 
 fn dist_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
@@ -67,14 +88,12 @@ fn smooth_coverage(dist: f32, radius: f32) -> f32 {
     ((radius + 0.65 - dist) / 1.3).clamp(0.0, 1.0)
 }
 
-/// Renders a crisp 44x44 (@2x Retina) Claude sunburst spark icon.
 fn render_claude_icon(r: u8, g: u8, b: u8) -> Image<'static> {
     let size: usize = 44;
     let mut rgba = vec![0u8; size * size * 4];
     let cx = 22.0f32;
     let cy = 22.0f32;
 
-    // 10 organic rays (alternating slightly in length like Claude's emblem)
     let ray_count = 10;
     let mut segments = Vec::with_capacity(ray_count);
     for i in 0..ray_count {
@@ -114,12 +133,10 @@ fn render_claude_icon(r: u8, g: u8, b: u8) -> Image<'static> {
     Image::new_owned(rgba, size as u32, size as u32)
 }
 
-/// Renders a crisp 44x44 (@2x Retina) Antigravity upward delta + orbital core icon.
 fn render_agy_icon(r: u8, g: u8, b: u8) -> Image<'static> {
     let size: usize = 44;
     let mut rgba = vec![0u8; size * size * 4];
 
-    // Upward sleek delta / chevron + levitation ring dot
     let segments = [
         (22.0f32, 6.5f32, 8.0f32, 34.5f32),
         (22.0f32, 6.5f32, 36.0f32, 34.5f32),
@@ -139,7 +156,6 @@ fn render_agy_icon(r: u8, g: u8, b: u8) -> Image<'static> {
                     min_d = d;
                 }
             }
-            // Floating core sphere at (22, 24.5)
             let core_d = ((px - 22.0).powi(2) + (py - 24.5).powi(2)).sqrt() - 3.3;
             if core_d < min_d {
                 min_d = core_d;
@@ -185,22 +201,32 @@ pub fn init_trays(app: &AppHandle, tray_state: Arc<TrayUiState>) -> tauri::Resul
 }
 
 pub fn update_trays(app: &AppHandle, payload: &FullUsagePayload) {
+    let show_rem = payload.config.menubar_show_remaining;
+
     if let Some(tray) = app.tray_by_id(CLAUDE_TRAY_ID) {
-        let pct = payload.claude.five_hour.used_pct;
-        let tone = tone_for_pct(pct);
+        let max_used = payload
+            .claude
+            .five_hour
+            .used_pct
+            .max(payload.claude.weekly.used_pct);
+        let tone = tone_for_pct(max_used);
         let (r, g, b, is_template) = rgb_for_tone(tone);
         let _ = tray.set_icon(Some(render_claude_icon(r, g, b)));
         let _ = tray.set_icon_as_template(is_template);
-        let _ = tray.set_title(Some(format!("{:.0}%", pct)));
+        let _ = tray.set_title(Some(format_tray_title(&payload.claude, show_rem)));
     }
 
     if let Some(tray) = app.tray_by_id(AGY_TRAY_ID) {
-        let pct = payload.agy.five_hour.used_pct;
-        let tone = tone_for_pct(pct);
+        let max_used = payload
+            .agy
+            .five_hour
+            .used_pct
+            .max(payload.agy.weekly.used_pct);
+        let tone = tone_for_pct(max_used);
         let (r, g, b, is_template) = rgb_for_tone(tone);
         let _ = tray.set_icon(Some(render_agy_icon(r, g, b)));
         let _ = tray.set_icon_as_template(is_template);
-        let _ = tray.set_title(Some(format!("{:.0}%", pct)));
+        let _ = tray.set_title(Some(format_tray_title(&payload.agy, show_rem)));
     }
 }
 
@@ -215,7 +241,6 @@ fn handle_tray_event(
             state.is_hovering_tray.store(true, Ordering::SeqCst);
             state.hover_seq.fetch_add(1, Ordering::SeqCst);
 
-            // Don't show mini hover card if main dashboard popover is currently open
             if let Some(main_win) = app.get_webview_window("main-popover") {
                 if main_win.is_visible().unwrap_or(false) {
                     return;
@@ -224,7 +249,7 @@ fn handle_tray_event(
 
             let _ = app.emit("hover-provider", provider);
             if let Some(hover_win) = app.get_webview_window("hover-card") {
-                position_window_below_tray(&hover_win, &rect, 276.0);
+                position_window_below_tray(&hover_win, &rect, 292.0);
                 let _ = hover_win.show();
             }
         }

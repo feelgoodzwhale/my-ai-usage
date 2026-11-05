@@ -3,13 +3,23 @@ use crate::collector::{
     CachedFileState, UsageRecord,
 };
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Default)]
 pub struct AgyCollector {
     files: HashMap<PathBuf, CachedFileState>,
+}
+
+fn extract_conversation_id(path: &Path) -> Option<String> {
+    // .../brain/<conv-id>/.system_generated/logs/transcript.jsonl
+    path.parent()?
+        .parent()?
+        .parent()?
+        .file_name()?
+        .to_str()
+        .map(|s| s.to_string())
 }
 
 impl AgyCollector {
@@ -57,11 +67,20 @@ impl AgyCollector {
             }
         }
 
-        let mut out: Vec<UsageRecord> = self
-            .files
-            .values()
-            .flat_map(|s| s.records.values().cloned())
-            .collect();
+        // Deduplicate across Desktop/IDE and CLI brain roots by (conversation_id, step_key)
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<UsageRecord> = Vec::new();
+        for (path, state) in &self.files {
+            let conv_prefix = extract_conversation_id(path)
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            for (step_key, rec) in &state.records {
+                let global_key = format!("{conv_prefix}:{step_key}");
+                if seen.insert(global_key) {
+                    out.push(rec.clone());
+                }
+            }
+        }
+
         out.sort_by_key(|r| r.timestamp);
         out
     }
@@ -80,7 +99,6 @@ fn read_agy_cli_default_model() -> Option<String> {
 }
 
 fn extract_model_selection_change(content: &str) -> Option<String> {
-    // Only inspect genuine <USER_SETTINGS_CHANGE> blocks so tool outputs never false-match
     let block = if let Some(s) = content.find("<USER_SETTINGS_CHANGE>") {
         let rest_block = &content[s..];
         let e = rest_block

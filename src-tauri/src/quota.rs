@@ -1,4 +1,4 @@
-use crate::collector::statusline::StatuslineSnapshot;
+use crate::collector::statusline::{RateLimitEntry, StatuslineSnapshot, SubQuotaBucket};
 use crate::collector::UsageRecord;
 use crate::config::{AgyQuotaMode, AppConfig};
 use chrono::{Datelike, Duration, Local, TimeZone, Timelike};
@@ -12,6 +12,7 @@ const THIRTY_DAYS_SECS: i64 = 30 * 86_400;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QuotaWindowStatus {
     pub used_pct: f64,
+    pub remaining_pct: f64,
     pub used_tokens: u64,
     pub limit_tokens: Option<u64>,
     pub resets_at: Option<i64>,
@@ -66,6 +67,7 @@ pub struct ProviderUsageReport {
     pub active_model: Option<String>,
     pub five_hour: QuotaWindowStatus,
     pub weekly: QuotaWindowStatus,
+    pub quota_groups: Vec<SubQuotaBucket>,
     pub ranges: ProviderRanges,
     pub hourly_24h: Vec<TrendBucket>,
     pub daily_30d: Vec<TrendBucket>,
@@ -100,9 +102,6 @@ pub fn quota_tokens_for_record(rec: &UsageRecord, mode: AgyQuotaMode) -> u64 {
     }
 }
 
-/// Computes a Session-Anchored block (e.g. 5 hours or 7 days).
-/// First message starts `[block_start, block_start + window_secs]`.
-/// Messages inside the block accumulate tokens; the first message at or after `block_end` opens a new block.
 pub fn compute_session_block(
     records: &[UsageRecord],
     now: i64,
@@ -116,7 +115,10 @@ pub fn compute_session_block(
     let mut block_end: i64 = 0;
     let mut block_tokens: u64 = 0;
 
-    for rec in records.iter().filter(|r| r.timestamp >= min_ts && r.timestamp <= now + 60) {
+    for rec in records
+        .iter()
+        .filter(|r| r.timestamp >= min_ts && r.timestamp <= now + 60)
+    {
         let t = quota_tokens_for_record(rec, mode);
         match block_start {
             None => {
@@ -146,6 +148,7 @@ pub fn compute_session_block(
             return (
                 QuotaWindowStatus {
                     used_pct: pct,
+                    remaining_pct: (100.0 - pct).clamp(0.0, 100.0),
                     used_tokens: block_tokens,
                     limit_tokens: Some(limit_tokens),
                     resets_at: Some(block_end),
@@ -159,6 +162,7 @@ pub fn compute_session_block(
     (
         QuotaWindowStatus {
             used_pct: 0.0,
+            remaining_pct: 100.0,
             used_tokens: 0,
             limit_tokens: Some(limit_tokens),
             resets_at: None,
@@ -196,27 +200,43 @@ pub fn build_provider_report(
         quota_mode,
     );
 
-    // Resolve 5-hour quota (prefer official statusLine snapshot if valid)
     let five_hour = resolve_hybrid_window(
         snapshot.and_then(|s| s.five_hour.as_ref()),
         snapshot.and_then(|s| s.updated_at),
         &local_5h,
         records,
-        five_hour_limit,
         quota_mode,
         now,
     );
 
-    // Resolve Weekly quota
     let weekly = resolve_hybrid_window(
         snapshot.and_then(|s| s.seven_day.as_ref()),
         snapshot.and_then(|s| s.updated_at),
         &local_7d,
         records,
-        weekly_limit,
         quota_mode,
         now,
     );
+
+    let quota_groups: Vec<SubQuotaBucket> = snapshot
+        .map(|s| {
+            s.quota_buckets
+                .iter()
+                .map(|b| {
+                    if let Some(rts) = b.resets_at {
+                        if now >= rts {
+                            let mut reset_b = b.clone();
+                            reset_b.used_pct = 0.0;
+                            reset_b.remaining_pct = 100.0;
+                            reset_b.resets_at = None;
+                            return reset_b;
+                        }
+                    }
+                    b.clone()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let local_now = Local
         .timestamp_opt(now, 0)
@@ -229,13 +249,12 @@ pub fn build_provider_report(
         .map(|dt| dt.timestamp())
         .unwrap_or(now - 86_400);
 
-    let five_h_stats_start = if five_hour.resets_at.is_some() {
-        five_hour
-            .resets_at
-            .map(|r| r - FIVE_HOURS_SECS)
-            .unwrap_or(block_5h_start)
-    } else {
+    let five_h_stats_start = if let Some(r) = five_hour.resets_at {
+        r - FIVE_HOURS_SECS
+    } else if five_hour.source == "official" {
         now - FIVE_HOURS_SECS
+    } else {
+        block_5h_start
     };
 
     let ranges = ProviderRanges {
@@ -254,10 +273,10 @@ pub fn build_provider_report(
 
     let plan_label = if let Some(tier) = snapshot.and_then(|s| s.plan_tier.as_ref()) {
         tier.clone()
-    } else if five_hour.source == "official" {
-        "Official Rate Limits".to_string()
+    } else if five_hour.source == "official" || weekly.source == "official" {
+        "Official Quota".to_string()
     } else {
-        "Local Quota Block".to_string()
+        "Local 5h Block".to_string()
     };
 
     ProviderUsageReport {
@@ -267,27 +286,31 @@ pub fn build_provider_report(
         active_model,
         five_hour,
         weekly,
+        quota_groups,
         ranges,
         hourly_24h,
         daily_30d,
-        last_updated: now,
+        last_updated: snapshot
+            .and_then(|s| s.updated_at)
+            .unwrap_or(now),
     }
 }
 
 fn resolve_hybrid_window(
-    official: Option<&crate::collector::statusline::RateLimitEntry>,
+    official: Option<&RateLimitEntry>,
     snap_updated_at: Option<i64>,
     local_fallback: &QuotaWindowStatus,
     records: &[UsageRecord],
-    limit_tokens: u64,
     mode: AgyQuotaMode,
     now: i64,
 ) -> QuotaWindowStatus {
     if let Some(off) = official {
         if let Some(reset_ts) = off.resets_at {
             if now < reset_ts {
+                let used = off.used_percentage.clamp(0.0, 999.0);
                 return QuotaWindowStatus {
-                    used_pct: off.used_percentage.clamp(0.0, 999.0),
+                    used_pct: used,
+                    remaining_pct: (100.0 - used).clamp(0.0, 100.0),
                     used_tokens: local_fallback.used_tokens,
                     limit_tokens: None,
                     resets_at: Some(reset_ts),
@@ -295,7 +318,6 @@ fn resolve_hybrid_window(
                 };
             } else {
                 // Official window already passed reset_ts!
-                // Check if new local messages happened after reset_ts without refreshing statusline.
                 let post_reset_tokens: u64 = records
                     .iter()
                     .filter(|r| r.timestamp >= reset_ts)
@@ -304,6 +326,7 @@ fn resolve_hybrid_window(
                 if post_reset_tokens == 0 {
                     return QuotaWindowStatus {
                         used_pct: 0.0,
+                        remaining_pct: 100.0,
                         used_tokens: 0,
                         limit_tokens: None,
                         resets_at: None,
@@ -311,13 +334,27 @@ fn resolve_hybrid_window(
                     };
                 }
             }
-        } else if let Some(updated) = snap_updated_at {
-            if now - updated < FIVE_HOURS_SECS {
+        } else {
+            // Official entry has `resets_at: None` (e.g. Claude 5h = 0% idle before a session starts)
+            let updated = snap_updated_at.unwrap_or(0);
+            let newer_local_tokens: u64 = if updated > 0 {
+                records
+                    .iter()
+                    .filter(|r| r.timestamp > updated + 30)
+                    .map(|r| quota_tokens_for_record(r, mode))
+                    .sum()
+            } else {
+                0
+            };
+
+            if newer_local_tokens == 0 {
+                let used = off.used_percentage.clamp(0.0, 999.0);
                 return QuotaWindowStatus {
-                    used_pct: off.used_percentage.clamp(0.0, 999.0),
-                    used_tokens: local_fallback.used_tokens,
-                    limit_tokens: Some(limit_tokens),
-                    resets_at: local_fallback.resets_at,
+                    used_pct: used,
+                    remaining_pct: (100.0 - used).clamp(0.0, 100.0),
+                    used_tokens: 0,
+                    limit_tokens: None,
+                    resets_at: None,
                     source: "official".to_string(),
                 };
             }
@@ -490,11 +527,10 @@ mod tests {
     fn test_session_anchored_5h_block_accumulates_and_resets() {
         let t0 = 1_700_000_000;
         let records = vec![
-            mk_rec(t0, 50_000, 50_000, 300_000),        // 100k active
-            mk_rec(t0 + 3600, 30_000, 20_000, 400_000), // +50k active -> 150k
+            mk_rec(t0, 50_000, 50_000, 300_000),
+            mk_rec(t0 + 3600, 30_000, 20_000, 400_000),
         ];
 
-        // 2 hours into the 5h block: active = 150k / 500k = 30%, resets at t0 + 18000
         let (status, _) = compute_session_block(
             &records,
             t0 + 7200,
@@ -504,10 +540,10 @@ mod tests {
             AgyQuotaMode::ActiveOnly,
         );
         assert!((status.used_pct - 30.0).abs() < 0.01);
+        assert!((status.remaining_pct - 70.0).abs() < 0.01);
         assert_eq!(status.used_tokens, 150_000);
         assert_eq!(status.resets_at, Some(t0 + FIVE_HOURS_SECS));
 
-        // After 5h + 10s with no new messages: resets to 0%!
         let (expired, _) = compute_session_block(
             &records,
             t0 + FIVE_HOURS_SECS + 10,
@@ -517,27 +553,36 @@ mod tests {
             AgyQuotaMode::ActiveOnly,
         );
         assert_eq!(expired.used_pct, 0.0);
+        assert_eq!(expired.remaining_pct, 100.0);
         assert_eq!(expired.resets_at, None);
     }
 
     #[test]
-    fn test_new_block_opens_after_previous_5h_expires() {
+    fn test_official_zero_without_resets_at_overrides_local_block() {
         let t0 = 1_700_000_000;
-        let t1 = t0 + FIVE_HOURS_SECS + 600;
-        let records = vec![
-            mk_rec(t0, 200_000, 50_000, 0),
-            mk_rec(t1, 40_000, 10_000, 0), // New block: 50k / 500k = 10%
-        ];
-
-        let (status, _) = compute_session_block(
+        let records = vec![mk_rec(t0 - 1000, 100_000, 50_000, 0)];
+        let (local, _) = compute_session_block(
             &records,
-            t1 + 300,
+            t0,
             FIVE_HOURS_SECS,
             48 * 3600,
             500_000,
             AgyQuotaMode::ActiveOnly,
         );
-        assert!((status.used_pct - 10.0).abs() < 0.01);
-        assert_eq!(status.resets_at, Some(t1 + FIVE_HOURS_SECS));
+        let off = RateLimitEntry {
+            used_percentage: 0.0,
+            resets_at: None,
+        };
+        let resolved = resolve_hybrid_window(
+            Some(&off),
+            Some(t0 - 10),
+            &local,
+            &records,
+            AgyQuotaMode::ActiveOnly,
+            t0,
+        );
+        assert_eq!(resolved.source, "official");
+        assert_eq!(resolved.used_pct, 0.0);
+        assert_eq!(resolved.remaining_pct, 100.0);
     }
 }

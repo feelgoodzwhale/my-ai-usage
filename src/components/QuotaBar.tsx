@@ -1,6 +1,7 @@
 import { CSSProperties, useId } from "react";
 import { AlertTriangle, CheckCircle2, OctagonAlert } from "lucide-react";
 import {
+  formatPctSmart,
   formatResetLabel,
   formatTokens,
   getStatusMeta,
@@ -56,7 +57,7 @@ export function QuotaBar({
           )}
         </div>
 
-        <div className="flex items-baseline gap-1.5 shrink-0">
+        <div className="flex items-baseline gap-1.5 shrink-0 tabular-nums">
           {compact && status.level !== "normal" && (
             <StatusIcon
               size={11}
@@ -64,8 +65,11 @@ export function QuotaBar({
               className={status.textClass}
             />
           )}
-          <span className={`text-xs font-bold tabular-nums ${status.textClass}`}>
-            {window.used_pct.toFixed(window.used_pct < 10 && window.used_pct > 0 ? 1 : 0)}%
+          <span className={`text-xs font-bold ${status.textClass}`}>
+            ใช้ไป {formatPctSmart(window.used_pct)}
+          </span>
+          <span className="text-[10px] text-[var(--text-muted)]">
+            (เหลือ {formatPctSmart(window.remaining_pct)})
           </span>
         </div>
       </div>

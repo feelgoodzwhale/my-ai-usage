@@ -28,8 +28,8 @@
       {
         "label": "hover-card",
         "title": "AI Usage Summary",
-        "width": 276,
-        "height": 158,
+        "width": 292,
+        "height": 168,
         "resizable": false,
         "decorations": false,
         "transparent": true,

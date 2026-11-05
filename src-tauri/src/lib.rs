@@ -7,7 +7,7 @@ pub mod tray;
 use chrono::Utc;
 use collector::agy::AgyCollector;
 use collector::claude::ClaudeCollector;
-use collector::statusline::{agy_status_path, claude_status_path, read_status_snapshot};
+use collector::statusline::{claude_dotfile_path, read_agy_snapshot, read_claude_snapshot};
 use config::{app_data_dir, AgyQuotaMode, AppConfig};
 use notifier::UsageNotifier;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
@@ -41,8 +41,8 @@ impl Default for EngineInner {
 impl EngineInner {
     pub fn compute_snapshot(&mut self) -> FullUsagePayload {
         let now = Utc::now().timestamp();
-        let claude_snap = read_status_snapshot(&claude_status_path());
-        let agy_snap = read_status_snapshot(&agy_status_path());
+        let claude_snap = read_claude_snapshot();
+        let agy_snap = read_agy_snapshot();
 
         let claude_records = self.claude_collector.collect();
         let agy_records = self
@@ -159,7 +159,6 @@ fn setup_vibrancy(app: &AppHandle) {
 fn spawn_background_watchers(app: AppHandle, engine: SharedEngine) {
     let _ = std::fs::create_dir_all(app_data_dir());
 
-    // 1. File watcher thread with 400ms debounce
     let app_fs = app.clone();
     let engine_fs = engine.clone();
     std::thread::spawn(move || {
@@ -169,6 +168,11 @@ fn spawn_background_watchers(app: AppHandle, engine: SharedEngine) {
         };
 
         let _ = watcher.watch(&app_data_dir(), RecursiveMode::NonRecursive);
+        if let Some(dotfile) = claude_dotfile_path() {
+            if dotfile.exists() {
+                let _ = watcher.watch(&dotfile, RecursiveMode::NonRecursive);
+            }
+        }
         if let Some(home) = dirs::home_dir() {
             let paths = [
                 home.join(".claude").join("projects"),
@@ -184,19 +188,15 @@ fn spawn_background_watchers(app: AppHandle, engine: SharedEngine) {
 
         let mut last_refresh = Instant::now() - Duration::from_secs(5);
         while let Ok(res) = rx.recv() {
-            if res.is_ok() {
-                if last_refresh.elapsed() >= Duration::from_millis(400) {
-                    // Drain queued burst events after short settle window
-                    std::thread::sleep(Duration::from_millis(250));
-                    while rx.try_recv().is_ok() {}
-                    let _ = refresh_and_broadcast(&app_fs, &engine_fs);
-                    last_refresh = Instant::now();
-                }
+            if res.is_ok() && last_refresh.elapsed() >= Duration::from_millis(400) {
+                std::thread::sleep(Duration::from_millis(250));
+                while rx.try_recv().is_ok() {}
+                let _ = refresh_and_broadcast(&app_fs, &engine_fs);
+                last_refresh = Instant::now();
             }
         }
     });
 
-    // 2. Periodic 30s ticker for reset countdown rollovers
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(30));
         let _ = refresh_and_broadcast(&app, &engine);
@@ -227,7 +227,6 @@ pub fn run() {
             setup_vibrancy(&handle);
             init_trays(&handle, tray_state_setup)?;
 
-            // Auto-hide main-popover when focus leaves it
             if let Some(main_win) = handle.get_webview_window("main-popover") {
                 let win_clone = main_win.clone();
                 let st = tray_ui_state.clone();
@@ -241,7 +240,6 @@ pub fn run() {
                 });
             }
 
-            // Initial immediate compute + tray update
             let _ = refresh_and_broadcast(&handle, &engine_setup);
             spawn_background_watchers(handle, engine_setup);
 
