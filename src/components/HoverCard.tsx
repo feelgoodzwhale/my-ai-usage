@@ -1,4 +1,9 @@
-import { FullUsagePayload, getStatusMeta, ProviderId } from "../types/usage";
+import {
+  FullUsagePayload,
+  getStatusMeta,
+  ProviderId,
+  QuotaWindowStatus,
+} from "../types/usage";
 import { BrandIcon } from "./BrandIcon";
 import { QuotaBar } from "./QuotaBar";
 
@@ -19,7 +24,28 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
 
   const report = provider === "claude" ? data.claude : data.agy;
   const displayMode = data.config.quota_display_mode;
-  const maxUsed = Math.max(report.five_hour.used_pct, report.weekly.used_pct);
+
+  const argonGroup =
+    provider === "agy"
+      ? report.quota_groups.find((g) => g.key === "gemini-argon-wtu-weekly")
+      : undefined;
+
+  const argonWindow: QuotaWindowStatus | null = argonGroup
+    ? {
+        used_pct: argonGroup.used_pct,
+        remaining_pct: argonGroup.remaining_pct,
+        used_tokens: 0,
+        limit_tokens: null,
+        resets_at: argonGroup.resets_at,
+        source: "official",
+      }
+    : null;
+
+  const maxUsed = Math.max(
+    report.five_hour.used_pct,
+    report.weekly.used_pct,
+    argonWindow?.used_pct ?? 0
+  );
   const status = getStatusMeta(maxUsed, provider, displayMode);
 
   return (
@@ -41,7 +67,7 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
         </span>
       </div>
 
-      <div className="space-y-2.5 pt-1">
+      <div className="space-y-2 pt-1">
         <QuotaBar
           title="5-Hour Limit"
           window={report.five_hour}
@@ -51,7 +77,7 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
           compact
         />
         <QuotaBar
-          title="Weekly Limit (7d)"
+          title={provider === "agy" ? "Weekly (Gemini)" : "Weekly Limit (7d)"}
           window={report.weekly}
           provider={provider}
           nowEpochSec={nowEpochSec}
@@ -59,6 +85,17 @@ export function HoverCard({ data, provider, nowEpochSec }: HoverCardProps) {
           isWeekly
           compact
         />
+        {argonWindow && (
+          <QuotaBar
+            title="Weekly (Argon)"
+            window={argonWindow}
+            provider={provider}
+            nowEpochSec={nowEpochSec}
+            displayMode={displayMode}
+            isWeekly
+            compact
+          />
+        )}
       </div>
     </div>
   );

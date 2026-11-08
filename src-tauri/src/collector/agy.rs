@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 #[derive(Default)]
 pub struct AgyCollector {
     files: HashMap<PathBuf, CachedFileState>,
+    pub latest_model_event: Option<(i64, String)>,
 }
 
 fn extract_conversation_id(path: &Path) -> Option<String> {
@@ -61,8 +62,16 @@ impl AgyCollector {
                 }
 
                 let state = self.files.entry(path_buf.clone()).or_default();
+                let latest_event = &mut self.latest_model_event;
                 read_incremental_lines(&path_buf, state, |line_offset, line, cur_model, records| {
-                    parse_agy_line(line_offset, line, cur_model, &default_model, records);
+                    parse_agy_line(
+                        line_offset,
+                        line,
+                        cur_model,
+                        &default_model,
+                        records,
+                        latest_event,
+                    );
                 });
             }
         }
@@ -130,14 +139,25 @@ pub fn parse_agy_line(
     cur_model: &mut Option<String>,
     default_model: &str,
     records: &mut HashMap<String, UsageRecord>,
+    latest_model_event: &mut Option<(i64, String)>,
 ) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
 
+    let line_ts = v
+        .get("created_at")
+        .and_then(|t| t.as_str())
+        .and_then(parse_rfc3339_epoch);
+
     if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
         if content.contains("Model Selection") {
             if let Some(new_model) = extract_model_selection_change(content) {
+                if let Some(ts) = line_ts {
+                    if latest_model_event.as_ref().is_none_or(|(prev_ts, _)| ts >= *prev_ts) {
+                        *latest_model_event = Some((ts, new_model.clone()));
+                    }
+                }
                 *cur_model = Some(new_model);
             }
         }
@@ -148,7 +168,13 @@ pub fn parse_agy_line(
         .and_then(|m| m.as_str())
         .filter(|s| !s.is_empty())
     {
-        *cur_model = Some(normalize_model_label(m));
+        let norm = normalize_model_label(m);
+        if let Some(ts) = line_ts {
+            if latest_model_event.as_ref().is_none_or(|(prev_ts, _)| ts >= *prev_ts) {
+                *latest_model_event = Some((ts, norm.clone()));
+            }
+        }
+        *cur_model = Some(norm);
     }
 
     let input_tokens = v.get("input_tokens").and_then(|n| n.as_u64()).unwrap_or(0);
@@ -162,10 +188,7 @@ pub fn parse_agy_line(
         return;
     }
 
-    let Some(ts_str) = v.get("created_at").and_then(|t| t.as_str()) else {
-        return;
-    };
-    let Some(timestamp) = parse_rfc3339_epoch(ts_str) else {
+    let Some(timestamp) = line_ts else {
         return;
     };
 

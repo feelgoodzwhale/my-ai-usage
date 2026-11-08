@@ -8,6 +8,7 @@ use std::collections::HashMap;
 const FIVE_HOURS_SECS: i64 = 5 * 3600;
 const SEVEN_DAYS_SECS: i64 = 7 * 86_400;
 const THIRTY_DAYS_SECS: i64 = 30 * 86_400;
+const AGY_MAX_STALE_SECS: i64 = 6 * 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QuotaWindowStatus {
@@ -16,7 +17,7 @@ pub struct QuotaWindowStatus {
     pub used_tokens: u64,
     pub limit_tokens: Option<u64>,
     pub resets_at: Option<i64>,
-    pub source: String, // "official" | "local_block"
+    pub source: String, // "official" | "official+live" | "calibrated_cost" | "local_block"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -102,6 +103,156 @@ pub fn quota_tokens_for_record(rec: &UsageRecord, mode: AgyQuotaMode) -> u64 {
     }
 }
 
+/// Computes Anthropic API dollar-equivalent cost for a single Claude UsageRecord,
+/// properly accounting for Opus vs Sonnet vs Haiku pricing as well as
+/// `cache_read_input_tokens` (0.1x) and `cache_creation_input_tokens` (1.25x).
+pub fn compute_claude_record_cost_usd(rec: &UsageRecord) -> f64 {
+    let m = rec.model.to_ascii_lowercase();
+    let (base_in, base_out) = if m.contains("opus") {
+        if m.contains("opus 3")
+            || m.contains("opus-3")
+            || m.contains("opus 4.0")
+            || m.contains("opus-4-0")
+            || m.contains("opus 4.1")
+            || m.contains("opus-4-1")
+        {
+            (15.0, 75.0)
+        } else {
+            (5.0, 25.0)
+        }
+    } else if m.contains("haiku") {
+        (1.0, 5.0)
+    } else {
+        (3.0, 15.0)
+    };
+
+    let cache_read_rate = base_in * 0.10;
+    let cache_write_rate = base_in * 1.25;
+
+    ((rec.input_tokens as f64) * base_in
+        + (rec.output_tokens as f64) * base_out
+        + (rec.cache_read_tokens as f64) * cache_read_rate
+        + (rec.cache_write_tokens as f64) * cache_write_rate)
+        / 1_000_000.0
+}
+
+/// Computes Claude's 5-hour session window with hour-floored start boundaries
+/// (`HH:00:00` -> `HH+5:00:00`, matching Anthropic's 5h reset clock) and API cost budget.
+pub fn compute_claude_5h_cost_window(
+    records: &[UsageRecord],
+    now: i64,
+    budget_usd: f64,
+) -> (QuotaWindowStatus, i64) {
+    let min_ts = now - 48 * 3600;
+    let mut block_start: Option<i64> = None;
+    let mut block_end: i64 = 0;
+    let mut block_cost_usd: f64 = 0.0;
+    let mut block_active_tokens: u64 = 0;
+
+    for rec in records
+        .iter()
+        .filter(|r| r.timestamp >= min_ts && r.timestamp <= now + 60)
+    {
+        let cost = compute_claude_record_cost_usd(rec);
+        let active_tok = rec.input_tokens + rec.output_tokens;
+        let floored_hour = rec.timestamp.div_euclid(3600) * 3600;
+
+        match block_start {
+            None => {
+                block_start = Some(floored_hour);
+                block_end = floored_hour + FIVE_HOURS_SECS;
+                block_cost_usd = cost;
+                block_active_tokens = active_tok;
+            }
+            Some(_) => {
+                if rec.timestamp < block_end {
+                    block_cost_usd += cost;
+                    block_active_tokens = block_active_tokens.saturating_add(active_tok);
+                } else {
+                    block_start = Some(floored_hour);
+                    block_end = floored_hour + FIVE_HOURS_SECS;
+                    block_cost_usd = cost;
+                    block_active_tokens = active_tok;
+                }
+            }
+        }
+    }
+
+    if let Some(start) = block_start {
+        if now < block_end {
+            let safe_budget = budget_usd.max(1.0);
+            let used_pct = ((block_cost_usd / safe_budget) * 100.0).clamp(0.0, 100.0);
+            return (
+                QuotaWindowStatus {
+                    used_pct,
+                    remaining_pct: (100.0 - used_pct).clamp(0.0, 100.0),
+                    used_tokens: block_active_tokens,
+                    limit_tokens: None,
+                    resets_at: Some(block_end),
+                    source: "calibrated_cost".to_string(),
+                },
+                start,
+            );
+        }
+    }
+
+    (
+        QuotaWindowStatus {
+            used_pct: 0.0,
+            remaining_pct: 100.0,
+            used_tokens: 0,
+            limit_tokens: None,
+            resets_at: None,
+            source: "calibrated_cost".to_string(),
+        },
+        now - FIVE_HOURS_SECS,
+    )
+}
+
+/// Computes Claude's 7-day weekly window anchored to Anthropic's fixed weekly reset cadence
+/// (e.g. Friday 04:00 AM local time from `~/.claude.json` `seven_day.resets_at`).
+pub fn compute_claude_weekly_cost_window(
+    records: &[UsageRecord],
+    now: i64,
+    budget_usd: f64,
+    weekly_reset_anchor: Option<i64>,
+) -> QuotaWindowStatus {
+    let (window_start, resets_at) = if let Some(anchor_ts) = weekly_reset_anchor {
+        let window_end = if anchor_ts > now {
+            let back = (anchor_ts - now - 1) / SEVEN_DAYS_SECS;
+            anchor_ts - back * SEVEN_DAYS_SECS
+        } else {
+            let periods = ((now - anchor_ts) / SEVEN_DAYS_SECS) + 1;
+            anchor_ts + periods * SEVEN_DAYS_SECS
+        };
+        (window_end - SEVEN_DAYS_SECS, Some(window_end))
+    } else {
+        (now - SEVEN_DAYS_SECS, None)
+    };
+
+    let mut total_cost_usd = 0.0;
+    let mut active_tokens: u64 = 0;
+    for rec in records
+        .iter()
+        .filter(|r| r.timestamp >= window_start && r.timestamp <= now + 60)
+    {
+        total_cost_usd += compute_claude_record_cost_usd(rec);
+        active_tokens = active_tokens.saturating_add(rec.input_tokens + rec.output_tokens);
+    }
+
+    let safe_budget = budget_usd.max(5.0);
+    let used_pct = ((total_cost_usd / safe_budget) * 100.0).clamp(0.0, 100.0);
+
+    QuotaWindowStatus {
+        used_pct,
+        remaining_pct: (100.0 - used_pct).clamp(0.0, 100.0),
+        used_tokens: active_tokens,
+        limit_tokens: None,
+        resets_at,
+        source: "calibrated_cost".to_string(),
+    }
+}
+
 pub fn compute_session_block(
     records: &[UsageRecord],
     now: i64,
@@ -172,49 +323,84 @@ pub fn compute_session_block(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_provider_report(
     id: &str,
     name: &str,
     records: &[UsageRecord],
     snapshot: Option<&StatuslineSnapshot>,
-    five_hour_limit: u64,
-    weekly_limit: u64,
-    quota_mode: AgyQuotaMode,
+    latest_transcript_model: Option<&(i64, String)>,
+    config: &AppConfig,
     now: i64,
 ) -> ProviderUsageReport {
-    let (local_5h, block_5h_start) = compute_session_block(
-        records,
-        now,
-        FIVE_HOURS_SECS,
-        48 * 3600,
-        five_hour_limit,
-        quota_mode,
-    );
+    let is_claude = id == "claude";
+    let quota_mode = if is_claude {
+        AgyQuotaMode::ActiveOnly
+    } else {
+        config.agy_quota_mode
+    };
 
-    let (local_7d, _block_7d_start) = compute_session_block(
-        records,
-        now,
-        SEVEN_DAYS_SECS,
-        35 * 86_400,
-        weekly_limit,
-        quota_mode,
-    );
+    let (local_5h, block_5h_start) = if is_claude {
+        compute_claude_5h_cost_window(records, now, config.claude_five_hour_budget_usd)
+    } else {
+        compute_session_block(
+            records,
+            now,
+            FIVE_HOURS_SECS,
+            48 * 3600,
+            config.agy_five_hour_limit,
+            quota_mode,
+        )
+    };
+
+    let local_7d = if is_claude {
+        compute_claude_weekly_cost_window(
+            records,
+            now,
+            config.claude_weekly_budget_usd,
+            snapshot.and_then(|s| s.weekly_reset_anchor),
+        )
+    } else {
+        compute_session_block(
+            records,
+            now,
+            SEVEN_DAYS_SECS,
+            35 * 86_400,
+            config.agy_weekly_limit,
+            quota_mode,
+        )
+        .0
+    };
+
+    let snap_quota_ts = snapshot.and_then(|s| s.quota_updated_at);
 
     let five_hour = resolve_hybrid_window(
+        id,
         snapshot.and_then(|s| s.five_hour.as_ref()),
-        snapshot.and_then(|s| s.updated_at),
+        snap_quota_ts,
         &local_5h,
         records,
         quota_mode,
+        if is_claude {
+            Some(config.claude_five_hour_budget_usd)
+        } else {
+            None
+        },
         now,
     );
 
     let weekly = resolve_hybrid_window(
+        id,
         snapshot.and_then(|s| s.seven_day.as_ref()),
-        snapshot.and_then(|s| s.updated_at),
+        snap_quota_ts,
         &local_7d,
         records,
         quota_mode,
+        if is_claude {
+            Some(config.claude_weekly_budget_usd)
+        } else {
+            None
+        },
         now,
     );
 
@@ -222,17 +408,20 @@ pub fn build_provider_report(
         .map(|s| {
             s.quota_buckets
                 .iter()
-                .map(|b| {
+                .filter_map(|b| {
                     if let Some(rts) = b.resets_at {
                         if now >= rts {
+                            if id == "claude" {
+                                return None;
+                            }
                             let mut reset_b = b.clone();
                             reset_b.used_pct = 0.0;
                             reset_b.remaining_pct = 100.0;
                             reset_b.resets_at = None;
-                            return reset_b;
+                            return Some(reset_b);
                         }
                     }
-                    b.clone()
+                    Some(b.clone())
                 })
                 .collect()
         })
@@ -251,7 +440,7 @@ pub fn build_provider_report(
 
     let five_h_stats_start = if let Some(r) = five_hour.resets_at {
         r - FIVE_HOURS_SECS
-    } else if five_hour.source == "official" {
+    } else if five_hour.source.starts_with("official") {
         now - FIVE_HOURS_SECS
     } else {
         block_5h_start
@@ -267,17 +456,23 @@ pub fn build_provider_report(
     let hourly_24h = build_hourly_buckets(records, now);
     let daily_30d = build_daily_buckets(records, now, 30);
 
-    let active_model = snapshot
-        .and_then(|s| s.model_name.clone())
-        .or_else(|| records.last().map(|r| r.model.clone()));
+    let active_model = resolve_active_model(id, records, snapshot, latest_transcript_model);
 
-    let plan_label = if let Some(tier) = snapshot.and_then(|s| s.plan_tier.as_ref()) {
-        tier.clone()
-    } else if five_hour.source == "official" || weekly.source == "official" {
-        "Official Quota".to_string()
+    let plan_label = if five_hour.source.starts_with("official")
+        || weekly.source.starts_with("official")
+    {
+        snapshot
+            .and_then(|s| s.plan_tier.clone())
+            .unwrap_or_else(|| "Official Quota".to_string())
+    } else if is_claude {
+        "Claude (Cost Calibrated)".to_string()
     } else {
         "Local 5h Block".to_string()
     };
+
+    let last_updated = snap_quota_ts
+        .or_else(|| records.last().map(|r| r.timestamp))
+        .unwrap_or(now);
 
     ProviderUsageReport {
         id: id.to_string(),
@@ -290,31 +485,107 @@ pub fn build_provider_report(
         ranges,
         hourly_24h,
         daily_30d,
-        last_updated: snapshot
-            .and_then(|s| s.updated_at)
-            .unwrap_or(now),
+        last_updated,
     }
 }
 
+fn resolve_active_model(
+    id: &str,
+    records: &[UsageRecord],
+    snapshot: Option<&StatuslineSnapshot>,
+    latest_transcript_model: Option<&(i64, String)>,
+) -> Option<String> {
+    let snap_model = snapshot.and_then(|s| {
+        let m = s.model_name.as_ref()?;
+        let has_active_ctx = s.context_used_pct.unwrap_or(0.0) > 0.0;
+        let ts = if id == "claude" {
+            s.quota_updated_at.unwrap_or(0)
+        } else if has_active_ctx {
+            s.updated_at.unwrap_or(0)
+        } else {
+            // Idle zero-token CLI probe: yield to real Desktop/CLI transcript model if available
+            0
+        };
+        Some((ts, m.clone()))
+    });
+
+    let rec_model = latest_transcript_model
+        .cloned()
+        .or_else(|| records.last().map(|r| (r.timestamp, r.model.clone())));
+
+    match (snap_model, rec_model) {
+        (Some((sts, sm)), Some((rts, rm))) => {
+            if rts > sts {
+                Some(rm)
+            } else {
+                Some(sm)
+            }
+        }
+        (Some((_, sm)), None) => Some(sm),
+        (None, Some((_, rm))) => Some(rm),
+        (None, None) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve_hybrid_window(
+    provider_id: &str,
     official: Option<&RateLimitEntry>,
-    snap_updated_at: Option<i64>,
+    snap_quota_updated_at: Option<i64>,
     local_fallback: &QuotaWindowStatus,
     records: &[UsageRecord],
     mode: AgyQuotaMode,
+    claude_budget_usd: Option<f64>,
     now: i64,
 ) -> QuotaWindowStatus {
     if let Some(off) = official {
+        // Guard against multi-day-old AGY rolling snapshots if live probe hasn't run yet
+        if provider_id == "agy" {
+            if let Some(qts) = snap_quota_updated_at {
+                if now - qts > AGY_MAX_STALE_SECS {
+                    let newer_tokens: u64 = records
+                        .iter()
+                        .filter(|r| r.timestamp > qts + 30)
+                        .map(|r| quota_tokens_for_record(r, mode))
+                        .sum();
+                    if newer_tokens > 0 && off.resets_at.is_some_and(|rts| rts - now > FIVE_HOURS_SECS) {
+                        return local_fallback.clone();
+                    }
+                }
+            }
+        }
+
         if let Some(reset_ts) = off.resets_at {
             if now < reset_ts {
-                let used = off.used_percentage.clamp(0.0, 999.0);
+                let mut used = off.used_percentage.clamp(0.0, 999.0);
+                let mut source = "official".to_string();
+
+                // If Claude had new local Desktop turns AFTER the last official CLI snapshot,
+                // add the incremental API-cost delta onto the official checkpoint!
+                if provider_id == "claude" {
+                    if let (Some(qts), Some(budget)) = (snap_quota_updated_at, claude_budget_usd) {
+                        if qts > 0 {
+                            let post_cost_usd: f64 = records
+                                .iter()
+                                .filter(|r| r.timestamp > qts + 30 && r.timestamp < reset_ts)
+                                .map(compute_claude_record_cost_usd)
+                                .sum();
+                            if post_cost_usd >= 0.05 {
+                                let delta_pct = (post_cost_usd / budget.max(1.0)) * 100.0;
+                                used = (used + delta_pct).clamp(0.0, 100.0);
+                                source = "official+live".to_string();
+                            }
+                        }
+                    }
+                }
+
                 return QuotaWindowStatus {
                     used_pct: used,
                     remaining_pct: (100.0 - used).clamp(0.0, 100.0),
                     used_tokens: local_fallback.used_tokens,
                     limit_tokens: None,
                     resets_at: Some(reset_ts),
-                    source: "official".to_string(),
+                    source,
                 };
             } else {
                 // Official window already passed reset_ts!
@@ -324,19 +595,25 @@ fn resolve_hybrid_window(
                     .map(|r| quota_tokens_for_record(r, mode))
                     .sum();
                 if post_reset_tokens == 0 {
+                    // For Claude weekly, advance reset_ts by +7d multiples so the next Friday 04:00 reset is shown!
+                    let next_reset = if provider_id == "claude" && local_fallback.resets_at.is_some() {
+                        local_fallback.resets_at
+                    } else {
+                        None
+                    };
                     return QuotaWindowStatus {
                         used_pct: 0.0,
                         remaining_pct: 100.0,
                         used_tokens: 0,
                         limit_tokens: None,
-                        resets_at: None,
+                        resets_at: next_reset,
                         source: "official".to_string(),
                     };
                 }
             }
         } else {
             // Official entry has `resets_at: None` (e.g. Claude 5h = 0% idle before a session starts)
-            let updated = snap_updated_at.unwrap_or(0);
+            let updated = snap_quota_updated_at.unwrap_or(0);
             let newer_local_tokens: u64 = if updated > 0 {
                 records
                     .iter()
@@ -494,7 +771,8 @@ fn build_daily_buckets(records: &[UsageRecord], now: i64, days: i64) -> Vec<Tren
     let cutoff_ts = buckets.first().map(|b| b.timestamp).unwrap_or(now);
     for rec in records.iter().filter(|r| r.timestamp >= cutoff_ts - 86_400) {
         if let Some(dt) = Local.timestamp_opt(rec.timestamp, 0).single() {
-            if let Some(&idx) = date_to_idx.get(&dt.date_naive()) {
+            let d = dt.date_naive();
+            if let Some(&idx) = date_to_idx.get(&d) {
                 let b = &mut buckets[idx];
                 b.input_tokens += rec.input_tokens;
                 b.output_tokens += rec.output_tokens;
@@ -560,29 +838,54 @@ mod tests {
     #[test]
     fn test_official_zero_without_resets_at_overrides_local_block() {
         let t0 = 1_700_000_000;
-        let records = vec![mk_rec(t0 - 1000, 100_000, 50_000, 0)];
+        let records = vec![mk_rec(t0, 100_000, 50_000, 0)];
         let (local, _) = compute_session_block(
             &records,
-            t0,
+            t0 + 600,
             FIVE_HOURS_SECS,
             48 * 3600,
             500_000,
             AgyQuotaMode::ActiveOnly,
         );
-        let off = RateLimitEntry {
+        let official = RateLimitEntry {
             used_percentage: 0.0,
             resets_at: None,
         };
         let resolved = resolve_hybrid_window(
-            Some(&off),
-            Some(t0 - 10),
+            "claude",
+            Some(&official),
+            Some(t0 + 590),
             &local,
             &records,
             AgyQuotaMode::ActiveOnly,
-            t0,
+            Some(38.50),
+            t0 + 600,
         );
-        assert_eq!(resolved.source, "official");
         assert_eq!(resolved.used_pct, 0.0);
         assert_eq!(resolved.remaining_pct, 100.0);
+        assert_eq!(resolved.source, "official");
+    }
+
+    #[test]
+    fn test_claude_floored_5h_and_anchored_weekly_cost_math() {
+        // 21:01:31 local -> 21:00:00 floored -> resets at 02:00:00 (+5h)
+        let msg_ts = 1_794_146_491; // 2026-11-08 21:01:31 +07:00
+        let floored = (msg_ts / 3600) * 3600;
+        let rec = UsageRecord {
+            timestamp: msg_ts,
+            model: "Claude Opus 5.5".to_string(),
+            input_tokens: 10,
+            output_tokens: 896,
+            cache_read_tokens: 713_059,
+            cache_write_tokens: 124_464,
+        };
+        let (five_h, _) = compute_claude_5h_cost_window(&[rec], msg_ts + 300, 38.50);
+        assert_eq!(five_h.resets_at, Some(floored + FIVE_HOURS_SECS));
+        assert_eq!(five_h.remaining_pct.round() as i64, 97);
+
+        // Weekly anchor Fri Nov 06 04:00 +07:00 (1793912400) -> next Fri Nov 13 04:00 +07:00 (1794517200)
+        let anchor = 1_793_912_400;
+        let weekly = compute_claude_weekly_cost_window(&[], msg_ts + 300, 437.50, Some(anchor));
+        assert_eq!(weekly.resets_at, Some(anchor + SEVEN_DAYS_SECS));
     }
 }

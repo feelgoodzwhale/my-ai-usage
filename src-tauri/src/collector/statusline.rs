@@ -26,11 +26,13 @@ pub struct SubQuotaBucket {
 pub struct StatuslineSnapshot {
     pub five_hour: Option<RateLimitEntry>,
     pub seven_day: Option<RateLimitEntry>,
+    pub weekly_reset_anchor: Option<i64>,
     pub model_name: Option<String>,
     pub plan_tier: Option<String>,
     pub context_used_pct: Option<f64>,
     pub quota_buckets: Vec<SubQuotaBucket>,
     pub updated_at: Option<i64>,
+    pub quota_updated_at: Option<i64>,
 }
 
 pub fn claude_status_path() -> PathBuf {
@@ -79,31 +81,45 @@ fn parse_rate_limit_obj(val: Option<&Value>) -> Option<RateLimitEntry> {
 }
 
 /// Reads Claude's official quota from both `~/.claude.json` (`cachedUsageUtilization`)
-/// and `~/.local/share/my-ai-usage/claude-status.json`, merging whichever is freshest.
+/// and `~/.local/share/my-ai-usage/claude-status.json`, merging whichever quota is freshest.
 pub fn read_claude_snapshot() -> Option<StatuslineSnapshot> {
     let status_snap = read_claude_statusline_file(&claude_status_path());
     let dotfile_snap = claude_dotfile_path().and_then(|p| read_claude_dotfile_utilization(&p));
 
     match (status_snap, dotfile_snap) {
         (Some(st), Some(df)) => {
-            let st_ts = st.updated_at.unwrap_or(0);
-            let df_ts = df.updated_at.unwrap_or(0);
+            let st_qts = st.quota_updated_at.unwrap_or(0);
+            let df_qts = df.quota_updated_at.unwrap_or(0);
 
-            let five_hour = merge_rate_entry(st.five_hour, st_ts, df.five_hour, df_ts);
-            let seven_day = merge_rate_entry(st.seven_day, st_ts, df.seven_day, df_ts);
-            let mut quota_buckets = df.quota_buckets;
-            if quota_buckets.is_empty() {
-                quota_buckets = st.quota_buckets;
-            }
+            let five_hour = merge_rate_entry(st.five_hour, st_qts, df.five_hour, df_qts);
+            let seven_day = merge_rate_entry(st.seven_day, st_qts, df.seven_day, df_qts);
+            let weekly_reset_anchor = if st_qts >= df_qts {
+                st.weekly_reset_anchor.or(df.weekly_reset_anchor)
+            } else {
+                df.weekly_reset_anchor.or(st.weekly_reset_anchor)
+            };
+
+            let quota_buckets = if !df.quota_buckets.is_empty() && df_qts >= st_qts {
+                df.quota_buckets
+            } else if !st.quota_buckets.is_empty() {
+                st.quota_buckets
+            } else {
+                df.quota_buckets
+            };
+
+            let best_qts = st_qts.max(df_qts);
+            let best_ts = st.updated_at.unwrap_or(0).max(df.updated_at.unwrap_or(0));
 
             Some(StatuslineSnapshot {
                 five_hour,
                 seven_day,
+                weekly_reset_anchor,
                 model_name: st.model_name.or(df.model_name),
-                plan_tier: st.plan_tier.or(df.plan_tier),
+                plan_tier: df.plan_tier.or(st.plan_tier),
                 context_used_pct: st.context_used_pct,
                 quota_buckets,
-                updated_at: Some(st_ts.max(df_ts)),
+                updated_at: if best_ts > 0 { Some(best_ts) } else { None },
+                quota_updated_at: if best_qts > 0 { Some(best_qts) } else { None },
             })
         }
         (Some(st), None) => Some(st),
@@ -139,6 +155,7 @@ fn read_claude_statusline_file(path: &PathBuf) -> Option<StatuslineSnapshot> {
     let rate_limits = v.get("rate_limits");
     let five_hour = parse_rate_limit_obj(rate_limits.and_then(|r| r.get("five_hour")));
     let seven_day = parse_rate_limit_obj(rate_limits.and_then(|r| r.get("seven_day")));
+    let weekly_reset_anchor = seven_day.as_ref().and_then(|s| s.resets_at);
 
     let model_name = v
         .get("model")
@@ -160,14 +177,24 @@ fn read_claude_statusline_file(path: &PathBuf) -> Option<StatuslineSnapshot> {
         .and_then(|t| t.as_i64())
         .or_else(|| file_mtime_epoch(path));
 
+    let quota_updated_at = if five_hour.is_some() || seven_day.is_some() {
+        v.get("_quota_captured_at")
+            .and_then(|t| t.as_i64())
+            .or(updated_at)
+    } else {
+        None
+    };
+
     Some(StatuslineSnapshot {
         five_hour,
         seven_day,
+        weekly_reset_anchor,
         model_name,
         plan_tier: Some("Claude".to_string()),
         context_used_pct,
         quota_buckets: Vec::new(),
         updated_at,
+        quota_updated_at,
     })
 }
 
@@ -179,33 +206,22 @@ fn read_claude_dotfile_utilization(path: &PathBuf) -> Option<StatuslineSnapshot>
 
     let five_hour = parse_rate_limit_obj(util.get("five_hour"));
     let seven_day = parse_rate_limit_obj(util.get("seven_day"));
+    let weekly_reset_anchor = seven_day
+        .as_ref()
+        .and_then(|s| s.resets_at)
+        .or_else(|| {
+            util.get("seven_day_breakdown")
+                .and_then(|b| b.get("window_started_at"))
+                .and_then(parse_timestamp_value)
+                .map(|start| start + 7 * 86_400)
+        });
 
-    let updated_at = cu
+    let quota_updated_at = cu
         .get("fetchedAtMs")
         .and_then(|ms| ms.as_i64().map(|n| n / 1000))
         .or_else(|| file_mtime_epoch(path));
 
     let mut quota_buckets = Vec::new();
-    if let Some(fh) = &five_hour {
-        quota_buckets.push(SubQuotaBucket {
-            key: "claude-5h".to_string(),
-            label: "Session Limit (5h)".to_string(),
-            window_kind: "5h".to_string(),
-            used_pct: fh.used_percentage.clamp(0.0, 100.0),
-            remaining_pct: (100.0 - fh.used_percentage).clamp(0.0, 100.0),
-            resets_at: fh.resets_at,
-        });
-    }
-    if let Some(sd) = &seven_day {
-        quota_buckets.push(SubQuotaBucket {
-            key: "claude-weekly".to_string(),
-            label: "Weekly Limit (All Models)".to_string(),
-            window_kind: "weekly".to_string(),
-            used_pct: sd.used_percentage.clamp(0.0, 100.0),
-            remaining_pct: (100.0 - sd.used_percentage).clamp(0.0, 100.0),
-            resets_at: sd.resets_at,
-        });
-    }
     for (k, title) in [
         ("seven_day_opus", "Weekly Opus Limit"),
         ("seven_day_sonnet", "Weekly Sonnet Limit"),
@@ -225,11 +241,13 @@ fn read_claude_dotfile_utilization(path: &PathBuf) -> Option<StatuslineSnapshot>
     Some(StatuslineSnapshot {
         five_hour,
         seven_day,
+        weekly_reset_anchor,
         model_name: None,
         plan_tier: Some("Claude Pro / Max".to_string()),
         context_used_pct: None,
         quota_buckets,
-        updated_at,
+        updated_at: quota_updated_at,
+        quota_updated_at,
     })
 }
 
@@ -269,6 +287,12 @@ pub fn read_agy_snapshot() -> Option<StatuslineSnapshot> {
         .and_then(|t| t.as_i64())
         .or_else(|| file_mtime_epoch(&path));
 
+    let has_quota_obj = v.get("quota").is_some_and(|q| !q.is_null());
+    let quota_updated_at = v
+        .get("_quota_captured_at")
+        .and_then(|t| t.as_i64())
+        .or_else(|| if has_quota_obj { updated_at } else { None });
+
     let model_name = v
         .get("model")
         .and_then(|m| {
@@ -304,7 +328,7 @@ pub fn read_agy_snapshot() -> Option<StatuslineSnapshot> {
                 .and_then(parse_timestamp_value)
                 .or_else(|| {
                     let secs = val.get("reset_in_seconds")?.as_i64()?;
-                    Some(updated_at.unwrap_or(0) + secs)
+                    Some(quota_updated_at.unwrap_or(0) + secs)
                 });
 
             let (ord, label, kind) = agy_bucket_label_and_order(k);
@@ -360,13 +384,17 @@ pub fn read_agy_snapshot() -> Option<StatuslineSnapshot> {
         })
         .or_else(|| parse_rate_limit_obj(v.get("rate_limits").and_then(|r| r.get("seven_day"))));
 
+    let weekly_reset_anchor = seven_day.as_ref().and_then(|s| s.resets_at);
+
     Some(StatuslineSnapshot {
         five_hour,
         seven_day,
+        weekly_reset_anchor,
         model_name,
         plan_tier,
         context_used_pct,
         quota_buckets,
         updated_at,
+        quota_updated_at,
     })
 }

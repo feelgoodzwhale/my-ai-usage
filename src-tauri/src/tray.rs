@@ -6,7 +6,7 @@ use std::time::Duration;
 use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, Manager, Position, Rect, Size, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Rect, Size, WebviewWindow,
 };
 
 pub const CLAUDE_TRAY_ID: &str = "claude-tray";
@@ -50,10 +50,10 @@ fn format_pct_compact(val: f64) -> String {
         "100%".to_string()
     } else if clamped <= 0.05 {
         "0%".to_string()
-    } else if (clamped - clamped.round()).abs() >= 0.05 {
+    } else if clamped > 99.0 || clamped < 1.0 {
         format!("{:.1}%", clamped)
     } else {
-        format!("{:.0}%", clamped)
+        format!("{:.0}%", clamped.round())
     }
 }
 
@@ -238,6 +238,8 @@ fn handle_tray_event(
 
             let _ = app.emit("hover-provider", provider);
             if let Some(hover_win) = app.get_webview_window("hover-card") {
+                let hover_height = if provider == "agy" { 224.0 } else { 168.0 };
+                let _ = hover_win.set_size(LogicalSize::new(292.0, hover_height));
                 position_window_below_tray(&hover_win, &rect, 292.0);
                 let _ = hover_win.show();
             }
@@ -367,7 +369,7 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Remaining), "98.4%");
-        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Used), "1.6%");
+        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Remaining), "98%");
+        assert_eq!(format_tray_title(&agy, QuotaDisplayMode::Used), "2%");
     }
 }

@@ -155,10 +155,13 @@ export function DashboardPopover({
                 </strong>
               </span>
               <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-[var(--meter-track)]">
-                {report.five_hour.source === "official" ||
-                report.weekly.source === "official"
+                {report.five_hour.source.startsWith("official") ||
+                report.weekly.source.startsWith("official")
                   ? `${report.plan_label} (Official)`
-                  : "Local 5h Block"}
+                  : report.five_hour.source === "calibrated_cost" ||
+                      report.weekly.source === "calibrated_cost"
+                    ? "Smart Cost Calibrated"
+                    : "Local 5h Block"}
               </span>
             </div>
 

@@ -162,7 +162,92 @@ export function SettingsPanel({ config, onUpdated }: SettingsPanelProps) {
 
       <fieldset className="glass-card p-3 space-y-2.5 border-0 m-0 min-w-0">
         <legend className="text-xs font-semibold p-0 mb-1">
-          เพดาน Token สำรอง (Fallback กรณีไม่มี Official Quota)
+          เพดาน Claude Cost (เมื่อใช้งานผ่าน Claude Desktop)
+        </legend>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label
+              htmlFor="claude-5h-usd"
+              className="block text-[11px] text-[var(--text-muted)]"
+            >
+              งบรอบ 5 ชั่วโมง (USD)
+            </label>
+            <input
+              id="claude-5h-usd"
+              name="claude_five_hour_budget_usd"
+              type="number"
+              min={1}
+              step={0.5}
+              value={draft.claude_five_hour_budget_usd}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  claude_five_hour_budget_usd: Math.max(
+                    1,
+                    Number(e.target.value) || 0
+                  ),
+                })
+              }
+              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-[var(--card-border)] bg-transparent tabular-nums"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label
+              htmlFor="claude-7d-usd"
+              className="block text-[11px] text-[var(--text-muted)]"
+            >
+              งบรายสัปดาห์ 7 วัน (USD)
+            </label>
+            <input
+              id="claude-7d-usd"
+              name="claude_weekly_budget_usd"
+              type="number"
+              min={5}
+              step={2.5}
+              value={draft.claude_weekly_budget_usd}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  claude_weekly_budget_usd: Math.max(
+                    5,
+                    Number(e.target.value) || 0
+                  ),
+                })
+              }
+              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-[var(--card-border)] bg-transparent tabular-nums"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-1.5 pt-0.5">
+          {[
+            { label: "Pro", b5: 12, b7: 85 },
+            { label: "Max 5x", b5: 38.5, b7: 437.5 },
+            { label: "Max 20x", b5: 150, b7: 1750 },
+          ].map((tier) => (
+            <button
+              key={tier.label}
+              type="button"
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  claude_five_hour_budget_usd: tier.b5,
+                  claude_weekly_budget_usd: tier.b7,
+                })
+              }
+              className="px-2 py-0.5 text-[10px] rounded-md border border-[var(--card-border)] hover:opacity-80 cursor-pointer"
+            >
+              {tier.label}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <fieldset className="glass-card p-3 space-y-2.5 border-0 m-0 min-w-0">
+        <legend className="text-xs font-semibold p-0 mb-1">
+          เพดาน Token สำรอง AGY (กรณีไม่มี Official Quota)
         </legend>
 
         <div className="space-y-1">

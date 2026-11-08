@@ -83,6 +83,8 @@ export interface AppConfig {
   agy_weekly_limit: number;
   claude_fallback_five_hour_limit: number;
   claude_fallback_weekly_limit: number;
+  claude_five_hour_budget_usd: number;
+  claude_weekly_budget_usd: number;
   agy_quota_mode: AgyQuotaMode;
   quota_display_mode: QuotaDisplayMode;
   notify_enabled: boolean;
@@ -103,23 +105,23 @@ export function formatPctSmart(pct: number, exact = false): string {
   if (exact) {
     return `${clamped.toFixed(2)}%`;
   }
-  if (clamped >= 99.995) {
+  if (clamped >= 99.95) {
     return "100%";
   }
-  if (clamped <= 0.005) {
+  if (clamped <= 0.05) {
     return "0%";
   }
-  if (Math.abs(clamped - Math.round(clamped)) < 0.05) {
-    return `${Math.round(clamped)}%`;
+  if (clamped > 99.0 || clamped < 1.0) {
+    return `${clamped.toFixed(1)}%`;
   }
-  return `${clamped.toFixed(2)}%`;
+  return `${Math.round(clamped)}%`;
 }
 
 export function formatPctCompact(val: number): string {
   const clamped = Math.min(100, Math.max(0, val));
   if (clamped >= 99.95) return "100%";
   if (clamped <= 0.05) return "0%";
-  if (Math.abs(clamped - Math.round(clamped)) >= 0.05) {
+  if (clamped > 99.0 || clamped < 1.0) {
     return `${clamped.toFixed(1)}%`;
   }
   return `${Math.round(clamped)}%`;

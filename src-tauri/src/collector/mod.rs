@@ -1,5 +1,6 @@
 pub mod agy;
 pub mod claude;
+pub mod live_probe;
 pub mod statusline;
 
 use chrono::DateTime;

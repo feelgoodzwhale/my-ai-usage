@@ -11,9 +11,10 @@ fi
 
 cat > "$TARGET_SCRIPT" << 'EOF'
 #!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 input=$(cat)
 
-# --- my-ai-usage statusline snapshot (non-blocking atomic merge write) ---
+# --- my-ai-usage statusline snapshot (synchronous atomic merge write) ---
 {
   DATA_DIR="$HOME/.local/share/my-ai-usage"
   mkdir -p "$DATA_DIR" 2>/dev/null
@@ -23,31 +24,48 @@ input=$(cat)
     if [ -f "$DEST" ]; then
       echo "$input" | jq -c --slurpfile prev "$DEST" --argjson ts "$NOW_TS" '
         ($prev[0].quota // null) as $pq |
-        . + (if .quota != null then {} elif $pq != null then {quota: $pq} else {} end) + {_captured_at: $ts}
+        ($prev[0]._quota_captured_at // $prev[0]._captured_at // null) as $pqts |
+        ($prev[0].plan_tier // null) as $pt |
+        . + (
+          if .quota != null then {_quota_captured_at: $ts}
+          elif $pq != null then {quota: $pq, _quota_captured_at: $pqts}
+          else {} end
+        ) + (
+          if .plan_tier != null then {}
+          elif $pt != null then {plan_tier: $pt}
+          else {} end
+        ) + {_captured_at: $ts}
       ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
     else
-      echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "${DEST}.tmp" 2>/dev/null \
-        && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+      echo "$input" | jq -c --argjson ts "$NOW_TS" '
+        . + (if .quota != null then {_quota_captured_at: $ts} else {} end) + {_captured_at: $ts}
+      ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
     fi
   elif echo "$input" | jq -e '.rate_limits != null or .session_id != null or .cost != null' >/dev/null 2>&1; then
     DEST="$DATA_DIR/claude-status.json"
     if [ -f "$DEST" ]; then
       echo "$input" | jq -c --slurpfile prev "$DEST" --argjson ts "$NOW_TS" '
         ($prev[0].rate_limits // null) as $prl |
-        . + (if .rate_limits != null then {} elif $prl != null then {rate_limits: $prl} else {} end) + {_captured_at: $ts}
+        ($prev[0]._quota_captured_at // $prev[0]._captured_at // null) as $prlts |
+        . + (
+          if .rate_limits != null then {_quota_captured_at: $ts}
+          elif $prl != null then {rate_limits: $prl, _quota_captured_at: $prlts}
+          else {} end
+        ) + {_captured_at: $ts}
       ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
     else
-      echo "$input" | jq -c --argjson ts "$NOW_TS" '. + {_captured_at: $ts}' > "${DEST}.tmp" 2>/dev/null \
-        && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
+      echo "$input" | jq -c --argjson ts "$NOW_TS" '
+        . + (if .rate_limits != null then {_quota_captured_at: $ts} else {} end) + {_captured_at: $ts}
+      ' > "${DEST}.tmp" 2>/dev/null && mv -f "${DEST}.tmp" "$DEST" 2>/dev/null
     fi
   fi
-} >/dev/null 2>&1 &
+} >/dev/null 2>&1 || true
 # --- end my-ai-usage statusline snapshot ---
 
 model=$(echo "$input" | jq -r '.model.display_name // .model.id // "Claude"')
 effort=$(echo "$input" | jq -r '.effort.level // empty')
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
-branch=$(git -C "${cwd:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null)
+branch=$(git -C "${cwd:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 
 out=""
 [ -n "$branch" ] && out="\033[2;32mBranch: ${branch}\033[0m | "

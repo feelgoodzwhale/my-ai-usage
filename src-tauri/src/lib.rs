@@ -7,8 +7,9 @@ pub mod tray;
 use chrono::Utc;
 use collector::agy::AgyCollector;
 use collector::claude::ClaudeCollector;
+use collector::live_probe::probe_live_quotas;
 use collector::statusline::{claude_dotfile_path, read_agy_snapshot, read_claude_snapshot};
-use config::{app_data_dir, AgyQuotaMode, AppConfig};
+use config::{app_data_dir, AppConfig};
 use notifier::UsageNotifier;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use quota::{build_provider_report, FullUsagePayload};
@@ -54,9 +55,8 @@ impl EngineInner {
             "Claude",
             &claude_records,
             claude_snap.as_ref(),
-            self.config.claude_fallback_five_hour_limit,
-            self.config.claude_fallback_weekly_limit,
-            AgyQuotaMode::ActiveOnly,
+            None,
+            &self.config,
             now,
         );
 
@@ -65,9 +65,8 @@ impl EngineInner {
             "AGY",
             &agy_records,
             agy_snap.as_ref(),
-            self.config.agy_five_hour_limit,
-            self.config.agy_weekly_limit,
-            self.config.agy_quota_mode,
+            self.agy_collector.latest_model_event.as_ref(),
+            &self.config,
             now,
         );
 
@@ -116,8 +115,18 @@ fn get_usage_data(app: AppHandle, engine: State<'_, SharedEngine>) -> FullUsageP
 }
 
 #[tauri::command]
-fn force_refresh(app: AppHandle, engine: State<'_, SharedEngine>) -> FullUsagePayload {
-    refresh_and_broadcast(&app, engine.inner())
+async fn force_refresh(
+    app: AppHandle,
+    engine: State<'_, SharedEngine>,
+) -> Result<FullUsagePayload, String> {
+    let app_clone = app.clone();
+    let engine_clone = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = probe_live_quotas(true);
+        refresh_and_broadcast(&app_clone, &engine_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -159,6 +168,18 @@ fn setup_vibrancy(app: &AppHandle) {
 fn spawn_background_watchers(app: AppHandle, engine: SharedEngine) {
     let _ = std::fs::create_dir_all(app_data_dir());
 
+    // 1. Initial non-blocking live CLI quota probe on app startup
+    {
+        let app_init = app.clone();
+        let engine_init = engine.clone();
+        std::thread::spawn(move || {
+            if probe_live_quotas(false) {
+                let _ = refresh_and_broadcast(&app_init, &engine_init);
+            }
+        });
+    }
+
+    // 2. Filesystem watcher for immediate local updates + post-activity live probe
     let app_fs = app.clone();
     let engine_fs = engine.clone();
     std::thread::spawn(move || {
@@ -188,18 +209,42 @@ fn spawn_background_watchers(app: AppHandle, engine: SharedEngine) {
 
         let mut last_refresh = Instant::now() - Duration::from_secs(5);
         while let Ok(res) = rx.recv() {
-            if res.is_ok() && last_refresh.elapsed() >= Duration::from_millis(400) {
-                std::thread::sleep(Duration::from_millis(250));
-                while rx.try_recv().is_ok() {}
-                let _ = refresh_and_broadcast(&app_fs, &engine_fs);
-                last_refresh = Instant::now();
+            if let Ok(event) = res {
+                let is_transcript = event.paths.iter().any(|p| {
+                    p.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                });
+                if last_refresh.elapsed() >= Duration::from_millis(400) {
+                    std::thread::sleep(Duration::from_millis(250));
+                    while rx.try_recv().is_ok() {}
+                    let _ = refresh_and_broadcast(&app_fs, &engine_fs);
+                    last_refresh = Instant::now();
+
+                    if is_transcript {
+                        let app_p = app_fs.clone();
+                        let engine_p = engine_fs.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_secs(6));
+                            if probe_live_quotas(false) {
+                                let _ = refresh_and_broadcast(&app_p, &engine_p);
+                            }
+                        });
+                    }
+                }
             }
         }
     });
 
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let _ = refresh_and_broadcast(&app, &engine);
+    // 3. Periodic 30s UI tick + periodic live CLI quota sync when stale
+    std::thread::spawn(move || {
+        let mut ticks: u64 = 0;
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            ticks += 1;
+            if ticks % 6 == 0 {
+                let _ = probe_live_quotas(false);
+            }
+            let _ = refresh_and_broadcast(&app, &engine);
+        }
     });
 }
 
