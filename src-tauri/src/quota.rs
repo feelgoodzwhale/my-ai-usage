@@ -136,8 +136,12 @@ pub fn compute_claude_record_cost_usd(rec: &UsageRecord) -> f64 {
         / 1_000_000.0
 }
 
-/// Computes Claude's 5-hour session window with hour-floored start boundaries
-/// (`HH:00:00` -> `HH+5:00:00`, matching Anthropic's 5h reset clock) and API cost budget.
+fn round_to_5min(ts: i64) -> i64 {
+    (ts + 150).div_euclid(300) * 300
+}
+
+/// Computes Claude's 5-hour session window (start = first message, reset rounded to 5 min)
+/// and API cost budget.
 pub fn compute_claude_5h_cost_window(
     records: &[UsageRecord],
     now: i64,
@@ -155,22 +159,26 @@ pub fn compute_claude_5h_cost_window(
     {
         let cost = compute_claude_record_cost_usd(rec);
         let active_tok = rec.input_tokens + rec.output_tokens;
-        let floored_hour = rec.timestamp.div_euclid(3600) * 3600;
+        // Session starts at the first message; reset = start + 5h rounded to the nearest 5 min
+        // (e.g. first msg 13:08:30 -> 18:10, first msg 21:01:31 -> 02:00).
+        let end_rounded = round_to_5min(rec.timestamp + FIVE_HOURS_SECS);
 
         match block_start {
             None => {
-                block_start = Some(floored_hour);
-                block_end = floored_hour + FIVE_HOURS_SECS;
+                block_start = Some(rec.timestamp);
+                block_end = end_rounded;
                 block_cost_usd = cost;
                 block_active_tokens = active_tok;
             }
             Some(_) => {
-                if rec.timestamp < block_end {
+                // 10 min tolerance: sessions can begin from other surfaces (claude.ai web, other
+                // devices) a few minutes before the first local transcript line.
+                if rec.timestamp < block_end - 600 {
                     block_cost_usd += cost;
                     block_active_tokens = block_active_tokens.saturating_add(active_tok);
                 } else {
-                    block_start = Some(floored_hour);
-                    block_end = floored_hour + FIVE_HOURS_SECS;
+                    block_start = Some(rec.timestamp);
+                    block_end = end_rounded;
                     block_cost_usd = cost;
                     block_active_tokens = active_tok;
                 }
